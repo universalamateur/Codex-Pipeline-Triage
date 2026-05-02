@@ -1,93 +1,145 @@
 # Codex Pipeline Triage
 
+Codex Pipeline Triage is a GitLab-connected demo app for failed CI/CD pipelines. A failed GitLab pipeline event triggers the app, the app builds bounded context from GitLab, Codex analyzes the failure through the Codex SDK, and the app reports findings back into GitLab.
 
+This repository is the implementation home for Codex Pipeline Triage. "Pipeline Fixxer" is retained only as historical planning context.
 
-## Getting started
+## Current State
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+Status: spec and demo planning.
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+There is no runtime implementation yet. The repo has been initialized with the product spec, demo state, and agent instructions so a dev team can build from a clear contract.
 
-## Add your files
+## Product Shape
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
+```text
+GitLab Pipeline event: failed
+  -> webhook receiver verifies project webhook token
+  -> intake planner classifies MR vs branch pipeline
+  -> context builder fetches jobs, traces, diffs, and metadata
+  -> Codex SDK triage agent returns structured analysis
+  -> action planner applies project policy
+  -> GitLab executor posts notes or creates issues
+  -> later controlled-actions stages may retry, open fix MRs, and monitor follow-up pipelines
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/universalamateur1/codex-pipeline-triage.git
-git branch -M main
-git push -uf origin main
+
+## Core Decisions
+
+- Use **GitLab Pipeline events** as the primary trigger.
+- Keep **GitLab Job events** disabled by default; they are optional telemetry later.
+- Use GitLab OAuth/OIDC for app login, then enforce a GitLab group-membership gate.
+- Restrict connected demo projects to the configured GitLab group.
+- Use a GitLab service account or project/bot token for GitLab API actions.
+- Prefer the GitLab CLI (`glab`) as the deterministic GitLab API executor surface.
+- Use the OpenAI **Codex SDK** server-side for triage.
+- Do not let Codex directly mutate GitLab. GitLab side effects happen only in deterministic executor code.
+- Default project policy is conservative: report findings and create/reuse issues. Retry and fix MR creation are opt-in later actions.
+
+## Behavior
+
+### Merge Request Pipelines
+
+When a failed pipeline belongs to a merge request:
+
+1. Analyze the failed pipeline.
+2. Post findings to the existing MR.
+3. Persist the triage run and audit record.
+4. Retry, fix MRs, and follow-up monitoring are later opt-in controlled actions.
+
+### Branch Pipelines Without MR
+
+When a failed pipeline is not attached to an MR:
+
+1. Create or reuse a GitLab issue for the failed pipeline.
+2. Post findings to the issue.
+3. Persist the triage run and audit record.
+4. Retry, fix MRs, and follow-up monitoring are later opt-in controlled actions.
+
+## Demo Fit
+
+This is intended to satisfy the OpenAI Codex demo-app requirement:
+
+| Requirement | Implementation |
+|---|---|
+| Demo app for major eCommerce hackathon | Use a synthetic checkout/cart demo repo with an intentionally broken pipeline. |
+| Codex can build impressive apps | The app is a working GitLab workflow, not a standalone toy UI. |
+| Programmatic Codex use | Server-side Codex SDK call with schema-validated output. |
+| Login / authorization | GitLab OAuth/OIDC plus GitLab group authorization. |
+| Data persistence | Connected projects, triage runs, action logs, monitors. |
+| Meaningful tests | Auth, webhook verification, pipeline filtering, Codex schema gate, GitLab action rendering. |
+| Working UX | GitLab MR notes and issues are the primary UX; app UI shows configuration and run history. |
+
+## Repository Docs
+
+- [SPEC.md](SPEC.md) - application specification and implementation contract.
+- [SPIKES.md](SPIKES.md) - iterative stage/spike plan with handoff gates.
+- [START-PROMPTS.md](START-PROMPTS.md) - copy-paste prompts for the dev team and pair code reviewer team.
+- [DEMO-STATE.md](DEMO-STATE.md) - demo scenario, recording plan, and current state.
+- [AGENTS.md](AGENTS.md) - instructions for agents and developers working in this repo.
+- [ADR-0001-runtime-stack.md](ADR-0001-runtime-stack.md) - current runtime stack decision.
+
+Local-only context lives in `.local/`. It is intentionally ignored by Git and can contain absolute workstation paths and zettelkasten cross-links.
+
+## Planned Stack
+
+- Python 3.10+
+- `uv`
+- FastAPI for HTTP routes, webhooks, sessions, and tests.
+- FastHTML only if it keeps the configuration UI simpler than templates.
+- OpenAI Codex Python SDK if Spike 1.1 verifies the experimental local SDK path.
+- `glab` CLI for GitLab API execution through a deterministic wrapper.
+- Pydantic
+- SQLite for local/demo persistence
+- pytest
+- Black, isort, flake8, pylint, mypy, and pytest-cov
+
+The stack should stay Python-first unless Spike 1.1 proves the Codex Python SDK path cannot support the demo. Any fallback must be captured in an ADR before implementation continues.
+
+Python project setup follows GitLab's Python style and project guides, with one local deviation: `uv` replaces the Poetry examples as the dependency/environment manager.
+
+## Environment Overview
+
+Do not commit real values.
+
+```text
+APP_BASE_URL=
+SESSION_SECRET=
+
+GITLAB_BASE_URL=https://gitlab.com
+GITLAB_OAUTH_CLIENT_ID=
+GITLAB_OAUTH_CLIENT_SECRET=
+AUTH_ALLOWLIST_MODE=gitlab_group
+ALLOWED_GITLAB_GROUP_ID=
+ALLOWED_GITLAB_PROJECT_GROUP_ID=
+GITLAB_EXECUTOR_MODE=glab
+GITLAB_SERVICE_ACCOUNT_USERNAME=
+
+OPENAI_API_KEY=
+PIPELINE_TRIAGE_MODE=mock
+PIPELINE_TRIAGE_CODEX_MODEL=
+
+TRIAGE_DATA_FILE=.local/triage-runs.json
 ```
 
-## Integrate with your tools
+Connected project tokens and webhook secrets are created through the app and stored server-side. They must never be exposed to the browser or logs. The `glab` wrapper must run non-interactively with a controlled token/config boundary, not with a developer's ambient personal session.
 
-* [Set up project integrations](https://gitlab.com/universalamateur1/codex-pipeline-triage/-/settings/integrations)
+## Iterative Build Model
 
-## Collaborate with your team
+Build this in spikes, not as one long implementation push.
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+Each spike follows this loop:
 
-## Test and Deploy
+```text
+dev team implements one spike
+  -> dev handoff
+  -> pair code reviewer team review
+  -> Falko manual test or explicit skip
+  -> fixes if needed
+  -> next spike only after approval
+```
 
-Use the built-in continuous integration in GitLab.
+Use [SPIKES.md](SPIKES.md) for the stage plan and [START-PROMPTS.md](START-PROMPTS.md) to launch the two teams.
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+## Next Build Step
 
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+Start with **Spike 1.1 - Framework Decision And Skeleton** from [SPIKES.md](SPIKES.md). Do not proceed to auth or GitLab integration until the skeleton has been reviewed and manually smoke-tested.
