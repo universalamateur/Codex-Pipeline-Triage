@@ -33,6 +33,7 @@ The planning dossier in the personal zettelkasten is upstream context, not runti
 
 - Keep v1 small and testable.
 - Prefer the Python-first runtime stack in [ADR-0001-runtime-stack.md](ADR-0001-runtime-stack.md).
+- Treat Spike 1.1 as a hard Codex SDK viability gate: if the experimental Python SDK cannot prove real programmatic Codex use with timeout, shutdown, and Pydantic validation, stop and write a fallback ADR for the TypeScript `@openai/codex-sdk` path before product implementation continues.
 - Follow the GitLab Python style guide and project guide unless this repo documents a narrower local choice.
 - Keep Python tool configuration consolidated in `pyproject.toml` where practical.
 - Use pytest, Black, isort, flake8, pylint, and mypy as the baseline quality tools.

@@ -160,6 +160,7 @@ Build:
 - Add minimal app shell only if needed.
 - Verify local `glab` availability and add a mocked executor wrapper seam.
 - Probe the experimental Codex Python SDK path and document whether it is viable.
+- If the Python SDK path is blocked, stop after writing a follow-up ADR for the TypeScript `@openai/codex-sdk` fallback. Do not continue into product implementation until the fallback is approved.
 
 Tests:
 
@@ -172,6 +173,7 @@ Manual test:
 
 - Start dev server.
 - Open health endpoint or first app page.
+- Review the Codex SDK spike note and confirm whether the project stays Python-first or pivots before Spike 1.2.
 
 Stop after this spike for review.
 
@@ -444,13 +446,13 @@ Goal: take useful actions only when project policy allows them.
 
 Build:
 
-- Action planner enforces `retrySafe` plus policy.
+- Action planner enforces `retry_safe` plus policy.
 - Retry job or failed pipeline.
 - Post action note.
 
 Tests:
 
-- Retry blocked when `retrySafe=false`.
+- Retry blocked when `retry_safe=false`.
 - Retry blocked when policy disabled.
 - Retry blocked by default policy.
 - Retry API payload correct.

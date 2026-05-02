@@ -118,7 +118,7 @@ Do not start with V3. The OpenAI demo is stronger if V1 is reliable and easy to 
 | 1:05-1:55 | Intake | App run detail: pipeline classified as MR pipeline, failed job fetched. |
 | 1:55-2:45 | Codex | Server-side Codex SDK call, structured output validation, timeout/fallback. |
 | 2:45-3:35 | Result | MR note appears with diagnosis and suggested fix. |
-| 3:35-4:20 | Safety | Allowlist auth, project token boundary, schema validation, no direct Codex mutations. |
+| 3:35-4:20 | Safety | GitLab group authorization, project token boundary, schema validation, no direct Codex mutations. |
 | 4:20-5:00 | Tests | Show focused tests and close with next actions. |
 
 ## Acceptance Criteria For Demo Readiness
@@ -162,7 +162,7 @@ Use [SPIKES.md](SPIKES.md) for the full plan and [START-PROMPTS.md](START-PROMPT
 ## Demo Talking Points
 
 - "Pipeline events are the root trigger because the app reasons at pipeline level, not job level."
-- "GitLab login proves identity; the app allowlist decides access."
+- "GitLab login proves identity; configured GitLab group membership decides app access."
 - "Codex proposes analysis and actions; deterministic code executes only allowed GitLab actions."
 - "The default path is reporting. Retry and fix MRs are explicit project-policy upgrades."
 - "Every result is reported back into GitLab and stored in the app."

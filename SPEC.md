@@ -39,6 +39,8 @@ Later controlled actions:
 - Create bot fix branches and fix MRs.
 - Monitor follow-up pipelines.
 
+V1 is enough for the first OpenAI demo cut only if it clearly shows a real Codex SDK path in the MR-pipeline workflow. The broader product is not complete until branch-pipeline issue reporting is added in the later reporting spike.
+
 ## Primary Workflow
 
 ```text
@@ -89,13 +91,14 @@ Job events: disabled
 
 The intake planner classifies the failed pipeline:
 
-```ts
-type PipelineKind =
-  | "merge_request"
-  | "branch"
-  | "tag"
-  | "child_or_parent"
-  | "unknown";
+```python
+PipelineKind = Literal[
+    "merge_request",
+    "branch",
+    "tag",
+    "child_or_parent",
+    "unknown",
+]
 ```
 
 Classification rules:
@@ -110,11 +113,25 @@ Classification rules:
 
 Every run must report back into GitLab.
 
-```ts
-type ReportTarget =
-  | { type: "merge_request"; projectId: number; mergeRequestIid: number }
-  | { type: "issue"; projectId: number; issueIid: number }
-  | { type: "internal"; projectId: number };
+```python
+class MergeRequestTarget(BaseModel):
+    type: Literal["merge_request"] = "merge_request"
+    project_id: int
+    merge_request_iid: int
+
+
+class IssueTarget(BaseModel):
+    type: Literal["issue"] = "issue"
+    project_id: int
+    issue_iid: int
+
+
+class InternalTarget(BaseModel):
+    type: Literal["internal"] = "internal"
+    project_id: int
+
+
+ReportTarget = MergeRequestTarget | IssueTarget | InternalTarget
 ```
 
 Rules:
@@ -166,49 +183,52 @@ Context rules:
 
 Uses Codex SDK to produce structured analysis:
 
-```ts
-type TriageResult = {
-  rootCauseHypothesis: string;
-  category:
-    | "test-flake"
-    | "code-bug"
-    | "infra"
-    | "config"
-    | "dependency"
-    | "unknown";
-  confidence: number;
-  evidence: Array<{
-    source: "pipeline" | "job_trace" | "mr_diff" | "commit_diff" | "test_report";
-    file?: string;
-    line?: number;
-    snippet: string;
-  }>;
-  retrySafe: boolean;
-  recommendedAction:
-    | "recommend_only"
-    | "retry_job"
-    | "retry_pipeline"
-    | "create_fix_mr";
-  suggestedFix: string;
-  needsHumanReview: boolean;
-};
+```python
+class EvidenceItem(BaseModel):
+    source: Literal["pipeline", "job_trace", "mr_diff", "commit_diff", "test_report"]
+    file: str | None = None
+    line: int | None = Field(default=None, ge=0)
+    snippet: str = Field(min_length=1, max_length=400)
+
+
+class TriageResult(BaseModel):
+    root_cause_hypothesis: str = Field(min_length=1, max_length=280)
+    category: Literal[
+        "test-flake",
+        "code-bug",
+        "infra",
+        "config",
+        "dependency",
+        "unknown",
+    ]
+    confidence: float = Field(ge=0, le=1)
+    evidence: list[EvidenceItem] = Field(max_length=5)
+    retry_safe: bool
+    recommended_action: Literal[
+        "recommend_only",
+        "retry_job",
+        "retry_pipeline",
+        "create_fix_mr",
+    ]
+    suggested_fix: str = Field(min_length=1, max_length=800)
+    needs_human_review: bool
 ```
 
 ### 4. Action Planner
 
 Combines `TriageResult` with project policy:
 
-```ts
-type ActionPlan = {
-  action:
-    | "recommend_only"
-    | "retry_job"
-    | "retry_pipeline"
-    | "create_issue"
-    | "create_fix_mr";
-  reason: string;
-  requiresFixerAgent: boolean;
-};
+```python
+class ActionPlan(BaseModel):
+    action: Literal[
+        "recommend_only",
+        "retry_job",
+        "retry_pipeline",
+        "create_issue",
+        "create_fix_mr",
+    ]
+    reason: str
+    requires_fixer_agent: bool
 ```
 
 Model output cannot authorize actions by itself. The action planner must enforce project policy.
@@ -244,30 +264,29 @@ Do not keep webhook HTTP requests open while waiting for follow-up pipelines.
 
 Default project policy:
 
-```ts
-type ProjectActionPolicy = {
-  recommendOnly: boolean;
-  autoCreateIssue: boolean;
-  autoRetry: boolean;
-  autoCreateFixMr: boolean;
-  directCommitToUserBranch: boolean;
-};
+```python
+class ProjectActionPolicy(BaseModel):
+    recommend_only: bool = False
+    auto_create_issue: bool = True
+    auto_retry: bool = False
+    auto_create_fix_mr: bool = False
+    direct_commit_to_user_branch: bool = False
 ```
 
 Default values:
 
 ```text
-recommendOnly=false
-autoCreateIssue=true
-autoRetry=false
-autoCreateFixMr=false
-directCommitToUserBranch=false
+recommend_only=false
+auto_create_issue=true
+auto_retry=false
+auto_create_fix_mr=false
+direct_commit_to_user_branch=false
 ```
 
 Rules:
 
 - Always report findings.
-- Retry only if `retrySafe === true` and policy allows retry.
+- Retry only if `retry_safe` is true and policy allows retry.
 - Retry is disabled by default and must not run before the controlled-actions spike enables it.
 - Create fix MRs only when policy explicitly allows it.
 - Prefer bot-owned fix branches over direct commits to developer branches.
@@ -282,7 +301,7 @@ For failed MR pipelines:
 2. Fetch failed jobs, traces, and MR diff.
 3. Post initial MR note with findings.
 4. Persist action audit record.
-5. Later, retry only if the controlled-actions stage is enabled, `retrySafe === true`, and policy allows retry.
+5. Later, retry only if the controlled-actions stage is enabled, `retry_safe` is true, and policy allows retry.
 6. Later, if fix MR is allowed:
    - Create bot branch from the MR source branch head.
    - Commit proposed fix to the bot branch.
@@ -297,7 +316,7 @@ For failed branch pipelines without MR:
 1. Create or reuse issue titled `Pipeline failed on <ref> at <short_sha>`.
 2. Post triage analysis to the issue.
 3. Persist action audit record.
-4. Later, retry only if the controlled-actions stage is enabled, `retrySafe === true`, and policy allows retry.
+4. Later, retry only if the controlled-actions stage is enabled, `retry_safe` is true, and policy allows retry.
 5. Later, if fix MR is allowed:
    - Create bot branch from the failed SHA.
    - Commit proposed fix.
@@ -388,89 +407,99 @@ async with AsyncCodex() as codex:
 Adapter requirements:
 
 - Treat the Python SDK as experimental until Spike 1.1 proves install, execution, timeout, and shutdown behavior.
+- Prove that the adapter can deliver a real Codex result that is parsed and validated against `TriageResult`.
+- If the Python SDK does not expose native structured-output options comparable to the TypeScript SDK's `outputSchema`, the adapter must still fail closed by parsing `final_response`, validating with Pydantic, and falling back visibly on any malformed or partial result.
 - Run Codex with read-only intent and no approvals.
 - Frame GitLab logs, diffs, comments, and commit messages as untrusted data, never instructions.
 - Require Codex to return JSON matching `TriageResult`.
 - Validate the final response with Pydantic before it reaches the action planner.
-- Store `fallbackReason` and show visible fallback if Codex times out, throws, returns empty output, or fails validation.
-- If the Python SDK cannot support the demo cleanly, stop and write a follow-up ADR for the smallest fallback adapter before continuing.
+- Store `fallback_reason` and show visible fallback if Codex times out, throws, returns empty output, or fails validation.
+- If the Python SDK cannot support the demo cleanly, stop and write a follow-up ADR for the smallest fallback adapter before continuing. The expected fallback is a TypeScript/Node adapter using `@openai/codex-sdk`; do not replace Codex with a generic Responses API path.
 
 ## Persistence Model
 
 Minimum records:
 
-```ts
-type ConnectedProject = {
-  id: string;
-  gitlabProjectId: number;
-  gitlabProjectPath: string;
-  displayName: string;
-  tokenCiphertext: string;
-  webhookSecretHash: string;
-  actionPolicy: ProjectActionPolicy;
-  connectedByGitlabUserId: number;
-  enabled: boolean;
-  createdAt: string;
-  updatedAt: string;
-};
+```python
+class ConnectedProject(BaseModel):
+    id: str
+    gitlab_project_id: int
+    gitlab_project_path: str
+    display_name: str
+    token_ciphertext: str
+    webhook_secret_hash: str
+    action_policy: ProjectActionPolicy
+    connected_by_gitlab_user_id: int
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
 
-type TriageRun = {
-  id: string;
-  connectedProjectId: string;
-  gitlabProjectId: number;
-  pipelineId: number;
-  jobIds: number[];
-  ref: string;
-  sha: string;
-  pipelineKind: PipelineKind;
-  reportTarget: ReportTarget;
-  status: "ignored" | "triaged" | "posted" | "actioned" | "monitoring" | "completed" | "failed";
-  adapterMode: "mock" | "codex";
-  fallbackReason?: string;
-  inputDigest: string;
-  triageJson?: TriageResult;
-  actionPlan?: ActionPlan;
-  gitlabNoteIds: number[];
-  issueIid?: number;
-  fixMergeRequestIid?: number;
-  createdAt: string;
-  updatedAt: string;
-};
 
-type GitLabActionLog = {
-  id: string;
-  triageRunId: string;
-  idempotencyKey: string;
-  action:
-    | "post_mr_note"
-    | "create_issue"
-    | "post_issue_note"
-    | "retry_job"
-    | "retry_pipeline"
-    | "create_commit"
-    | "create_merge_request";
-  reportTarget: ReportTarget;
-  policyDecision: "allowed" | "blocked" | "fallback";
-  requestDigest: string;
-  externalId?: string;
-  status: "planned" | "started" | "completed" | "failed" | "skipped";
-  fallbackReason?: string;
-  createdAt: string;
-  updatedAt: string;
-};
+class TriageRun(BaseModel):
+    id: str
+    connected_project_id: str
+    gitlab_project_id: int
+    pipeline_id: int
+    job_ids: list[int]
+    ref: str
+    sha: str
+    pipeline_kind: PipelineKind
+    report_target: ReportTarget
+    status: Literal[
+        "ignored",
+        "triaged",
+        "posted",
+        "actioned",
+        "monitoring",
+        "completed",
+        "failed",
+    ]
+    adapter_mode: Literal["mock", "codex"]
+    fallback_reason: str | None = None
+    input_digest: str
+    triage_json: TriageResult | None = None
+    action_plan: ActionPlan | None = None
+    gitlab_note_ids: list[int] = Field(default_factory=list)
+    issue_iid: int | None = None
+    fix_merge_request_iid: int | None = None
+    created_at: datetime
+    updated_at: datetime
 
-type PipelineMonitor = {
-  id: string;
-  triageRunId: string;
-  gitlabProjectId: number;
-  expectedRef: string;
-  expectedSha?: string;
-  expectedPipelineId?: number;
-  reportTarget: ReportTarget;
-  status: "waiting" | "passed" | "failed" | "timed_out";
-  createdAt: string;
-  updatedAt: string;
-};
+
+class GitLabActionLog(BaseModel):
+    id: str
+    triage_run_id: str
+    idempotency_key: str
+    action: Literal[
+        "post_mr_note",
+        "create_issue",
+        "post_issue_note",
+        "retry_job",
+        "retry_pipeline",
+        "create_commit",
+        "create_merge_request",
+    ]
+    report_target: ReportTarget
+    policy_decision: Literal["allowed", "blocked", "fallback"]
+    request_digest: str
+    external_id: str | None = None
+    status: Literal["planned", "started", "completed", "failed", "skipped"]
+    fallback_reason: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PipelineMonitor(BaseModel):
+    id: str
+    triage_run_id: str
+    gitlab_project_id: int
+    expected_ref: str
+    expected_sha: str | None = None
+    expected_pipeline_id: int | None = None
+    report_target: ReportTarget
+    status: Literal["waiting", "passed", "failed", "timed_out"]
+    created_at: datetime
+    updated_at: datetime
 ```
 
 SQLite is preferred for implementation. JSON file persistence is acceptable only before project tokens, webhook secrets, sessions, or real GitLab side effects are introduced.
@@ -482,8 +511,9 @@ For GitLab side effects, persist intent before executing the action, then mark t
 GitLab API execution should use deterministic executor code. The preferred executor surface is the GitLab CLI:
 
 - Use `glab api` for REST and GraphQL calls.
-- Run with `NO_PROMPT=true` and a controlled `GLAB_CONFIG_DIR` under `.local/`.
-- Provide auth through the app's server-side secret boundary.
+- Run with `NO_PROMPT=true` and a controlled, non-persistent `GLAB_CONFIG_DIR` under `.local/`.
+- Provide auth through the app's server-side secret boundary for the connected project.
+- Do not let `glab` write or reuse its own long-lived authenticated state. If a command would require `glab auth login`, the wrapper design is wrong for app execution.
 - Parse JSON output and map failures into typed executor errors.
 - Do not rely on a developer's ambient authenticated `glab` session.
 
@@ -554,7 +584,7 @@ Minimum test coverage:
 - Duplicate pipeline event does not create duplicate GitLab reports.
 - Codex malformed output triggers visible fallback.
 - Action planner blocks fix MR when policy disallows it.
-- Retry action requires `retrySafe === true`.
+- Retry action requires `retry_safe` to be true.
 - GitLab note/issue rendering includes hypothesis, evidence, confidence, action, and fallback reason when present.
 - GitLab note/issue rendering escapes or code-fences untrusted snippets, truncates oversized content, suppresses unsafe mentions/links where practical, and redacts secrets after Codex output.
 - Malformed payloads fail safely.
@@ -577,8 +607,8 @@ Top risks:
 
 Mitigations:
 
-- Explicit allowlist/group gate.
-- Group allowlist for connected demo projects.
+- Explicit GitLab group gate.
+- Configured GitLab group boundary for connected demo projects.
 - Server-side token storage with encryption or secret-store boundary.
 - Redaction and truncation before Codex.
 - Redaction after Codex before rendering or persistence.

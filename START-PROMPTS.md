@@ -25,6 +25,7 @@ Rules:
 - Do not proceed to the next spike, even if this one finishes quickly.
 - Preserve the product contract in SPEC.md.
 - Preserve the Python-first stack decision in ADR-0001-runtime-stack.md unless concrete evidence requires a follow-up ADR.
+- Treat the Codex Python SDK path as a hard Spike 1.1 gate. If it cannot prove real programmatic Codex use with timeout, shutdown, and Pydantic validation, stop and propose a TypeScript `@openai/codex-sdk` fallback ADR.
 - Follow the GitLab Python style guide and project guide.
 - Keep Python tool configuration in `pyproject.toml` where practical.
 - Run or document the relevant quality commands: format check, lint, typecheck, and pytest.
@@ -94,6 +95,7 @@ Review stance:
 - Check that fallback is visible and not fake success.
 - Check that V1 remains report-only and does not retry, commit, or create fix MRs.
 - Check Python style against the GitLab Python guide: pytest, mirrored test naming, Black/isort, flake8, pylint, mypy, and boundary-level mocks.
+- For Spike 1.1, check whether the Codex Python SDK evidence is strong enough for the OpenAI demo requirement. If not, require a fallback ADR before further implementation.
 - Check the design principles gate in order: understandability, maintainability, simplicity.
 - Check that tests match the spike's risk level.
 

@@ -63,7 +63,7 @@ This is intended to satisfy the OpenAI Codex demo-app requirement:
 |---|---|
 | Demo app for major eCommerce hackathon | Use a synthetic checkout/cart demo repo with an intentionally broken pipeline. |
 | Codex can build impressive apps | The app is a working GitLab workflow, not a standalone toy UI. |
-| Programmatic Codex use | Server-side Codex SDK call with schema-validated output. |
+| Programmatic Codex use | Server-side Codex SDK call with schema-validated output. Spike 1.1 must prove the Python SDK path or trigger an ADR-backed fallback to `@openai/codex-sdk`. |
 | Login / authorization | GitLab OAuth/OIDC plus GitLab group authorization. |
 | Data persistence | Connected projects, triage runs, action logs, monitors. |
 | Meaningful tests | Auth, webhook verification, pipeline filtering, Codex schema gate, GitLab action rendering. |
@@ -93,7 +93,7 @@ Local-only context lives in `.local/`. It is intentionally ignored by Git and ca
 - pytest
 - Black, isort, flake8, pylint, mypy, and pytest-cov
 
-The stack should stay Python-first unless Spike 1.1 proves the Codex Python SDK path cannot support the demo. Any fallback must be captured in an ADR before implementation continues.
+The stack should stay Python-first unless Spike 1.1 proves the Codex Python SDK path cannot support the demo. Any fallback must be captured in an ADR before implementation continues. The fallback must still satisfy the OpenAI assignment by using a real Codex surface, not a generic OpenAI Responses API call.
 
 Python project setup follows GitLab's Python style and project guides, with one local deviation: `uv` replaces the Poetry examples as the dependency/environment manager.
 
@@ -122,6 +122,18 @@ TRIAGE_DATA_FILE=.local/triage-runs.json
 ```
 
 Connected project tokens and webhook secrets are created through the app and stored server-side. They must never be exposed to the browser or logs. The `glab` wrapper must run non-interactively with a controlled token/config boundary, not with a developer's ambient personal session.
+
+## Readiness For Teams
+
+The repo is ready for dev, test, QA, and review teams to start **Stage 1 / Spike 1.1**.
+
+Readiness boundaries:
+
+- Runtime implementation has not started.
+- Stage 1.1 is a validation spike, not a product feature spike.
+- The main open architectural risk is the experimental Codex Python SDK path.
+- If the Python SDK cannot satisfy real programmatic Codex use with clean timeout/shutdown and schema validation, stop and write an ADR for the TypeScript `@openai/codex-sdk` fallback before building further.
+- V1 demo readiness means failed MR pipeline -> Codex triage -> MR note. Branch pipeline issue reporting is required for product completeness in later spikes, not for the first OpenAI demo cut.
 
 ## Iterative Build Model
 

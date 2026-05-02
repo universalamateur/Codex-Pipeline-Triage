@@ -18,7 +18,7 @@ The workstation already has `glab` available, and GitLab's CLI exposes `glab api
 
 ## Decision
 
-Use a Python-first stack:
+Use a Python-first stack for Spike 1.1 validation:
 
 - Python 3.10+ managed with `uv`.
 - FastAPI for HTTP routes, webhooks, sessions, and tests.
@@ -26,9 +26,11 @@ Use a Python-first stack:
 - SQLite for demo persistence.
 - pytest for tests.
 - `glab` CLI wrapped by deterministic executor code for GitLab API calls.
-- Codex Python SDK if Spike 1.1 verifies the local SDK installation and app-server flow.
+- Codex Python SDK only if Spike 1.1 verifies the local SDK installation, app-server flow, timeout/shutdown behavior, and schema-validation path.
 
 FastHTML may be used for the small UI only if it reduces complexity compared with templates. It should not drive the webhook or executor architecture.
+
+This decision is intentionally provisional on the Codex surface. The OpenAI demo requirement is programmatic Codex use inside the app or workflow. OpenAI's documented stable app SDK path is the server-side TypeScript SDK (`@openai/codex-sdk`); the Python SDK is documented as experimental and local-app-server based. If Spike 1.1 cannot prove the Python SDK path end-to-end, the project must stop and write ADR 0002 before implementation proceeds. The expected fallback is the smallest TypeScript/Node adapter using `@openai/codex-sdk`, not a generic Responses API wrapper.
 
 Follow the GitLab Python project and style guides where they fit this repo:
 
@@ -48,6 +50,7 @@ Intentional deviation: GitLab's project guide uses Poetry examples. This repo us
 
 - Do not use a developer's ambient `glab` session for app execution.
 - Run `glab` non-interactively through a wrapper that controls environment, token source, timeout, arguments, output parsing, and logging.
+- `glab` must receive credentials only from the app's server-side secret boundary for the connected project. It must not create or rely on its own persistent authenticated state.
 - Do not pass secrets on command lines where they can appear in process listings or logs.
 - Keep Codex server-side only.
 - Validate Codex output with Pydantic before any action planning.
@@ -63,7 +66,7 @@ Spike 1.1 must prove or document:
 - Makefile or equivalent scripts expose `format`, `lint`, `typecheck`, `test`, and `test-cov`.
 - `glab --version` and a mocked `glab api` wrapper path work.
 - The Codex Python SDK path is viable or blocked with concrete evidence.
-- If blocked, the smallest fallback adapter is proposed in a follow-up ADR before implementation moves beyond the skeleton.
+- If blocked, the smallest fallback adapter is proposed in a follow-up ADR before implementation moves beyond the skeleton. That ADR must explicitly preserve the OpenAI demo's "programmatic Codex" requirement.
 
 ## References
 
