@@ -1,6 +1,7 @@
 """FastAPI application entry point."""
 
 import urllib.parse
+from dataclasses import dataclass
 from typing import Literal
 
 from fastapi import FastAPI, Request, Response, status
@@ -9,10 +10,13 @@ from pydantic import BaseModel, ConfigDict
 
 from codex_pipeline_triage.auth import (
     AuthSettings,
+    GitLabGroupAuthorizer,
+    GitLabGroupMembershipClient,
     GitLabOAuthClient,
     InMemorySessionStore,
     OAuthError,
     OAuthStateStore,
+    UrllibGitLabGroupMembershipClient,
     UrllibGitLabOAuthClient,
     build_gitlab_authorization_url,
 )
@@ -29,18 +33,33 @@ class HealthResponse(BaseModel):
     service: str = SERVICE_NAME
 
 
+@dataclass(frozen=True)
+class AuthRuntime:
+    """Resolved auth dependencies for the app factory."""
+
+    settings: AuthSettings
+    oauth_client: GitLabOAuthClient
+    authorizer: GitLabGroupAuthorizer
+    session_store: InMemorySessionStore
+    oauth_state_store: OAuthStateStore
+
+
 def create_app(
     *,
     auth_settings: AuthSettings | None = None,
     oauth_client: GitLabOAuthClient | None = None,
+    group_membership_client: GitLabGroupMembershipClient | None = None,
     session_store: InMemorySessionStore | None = None,
     oauth_state_store: OAuthStateStore | None = None,
 ) -> FastAPI:
     """Create the FastAPI app for local development and tests."""
-    settings = auth_settings or AuthSettings.from_env()
-    resolved_oauth_client = oauth_client or UrllibGitLabOAuthClient(settings)
-    resolved_session_store = session_store or InMemorySessionStore()
-    resolved_state_store = oauth_state_store or OAuthStateStore()
+    runtime = _build_auth_runtime(
+        auth_settings=auth_settings,
+        oauth_client=oauth_client,
+        group_membership_client=group_membership_client,
+        session_store=session_store,
+        oauth_state_store=oauth_state_store,
+    )
     fastapi_app = FastAPI(
         title="Codex Pipeline Triage",
         version="0.1.0",
@@ -52,8 +71,8 @@ def create_app(
 
     @fastapi_app.get("/", response_class=HTMLResponse, tags=["auth"])
     async def index(request: Request) -> HTMLResponse:
-        session = resolved_session_store.get_session(
-            request.cookies.get(settings.session_cookie_name)
+        session = runtime.session_store.get_session(
+            request.cookies.get(runtime.settings.session_cookie_name)
         )
         if session is None:
             return HTMLResponse(
@@ -70,7 +89,7 @@ def create_app(
                 "Codex Pipeline Triage",
                 (
                     f"<p>Signed in as {username}.</p>"
-                    "<p>Authorization gate comes in Spike 2.2.</p>"
+                    "<p>GitLab group authorization passed.</p>"
                     '<form action="/logout" method="post">'
                     f'<input type="hidden" name="csrf_token" value="{csrf_token}">'
                     '<button type="submit">Log out</button>'
@@ -81,23 +100,23 @@ def create_app(
 
     @fastapi_app.get("/login", tags=["auth"])
     async def login() -> Response:
-        if not settings.is_oauth_configured:
+        if not runtime.settings.is_oauth_configured:
             return HTMLResponse(
                 _page("GitLab Login", "<p>GitLab OAuth is not configured.</p>"),
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        oauth_state = resolved_state_store.create_state()
+        oauth_state = runtime.oauth_state_store.create_state()
         response = RedirectResponse(
-            build_gitlab_authorization_url(settings, oauth_state),
+            build_gitlab_authorization_url(runtime.settings, oauth_state),
             status_code=status.HTTP_303_SEE_OTHER,
         )
         _set_cookie(
             response,
-            name=settings.oauth_state_cookie_name,
+            name=runtime.settings.oauth_state_cookie_name,
             value=oauth_state,
-            max_age=settings.oauth_state_max_age_seconds,
-            settings=settings,
+            max_age=runtime.settings.oauth_state_max_age_seconds,
+            settings=runtime.settings,
         )
         return response
 
@@ -107,12 +126,12 @@ def create_app(
         code: str | None = None,
         state: str | None = None,
     ) -> Response:
-        expected_state = request.cookies.get(settings.oauth_state_cookie_name)
+        expected_state = request.cookies.get(runtime.settings.oauth_state_cookie_name)
         if (
             not code
             or not state
             or state != expected_state
-            or not resolved_state_store.consume_state(state)
+            or not runtime.oauth_state_store.consume_state(state)
         ):
             return HTMLResponse(
                 _page("GitLab Login Failed", "<p>Invalid OAuth state.</p>"),
@@ -120,34 +139,47 @@ def create_app(
             )
 
         try:
-            identity = resolved_oauth_client.exchange_code_for_user(
+            # Pylint does not infer return types from structural Protocols here.
+            # pylint: disable-next=assignment-from-no-return
+            oauth_result = runtime.oauth_client.exchange_code_for_user(
                 code=code,
-                redirect_uri=settings.callback_url,
+                redirect_uri=runtime.settings.callback_url,
             )
         except OAuthError:
             response: Response = HTMLResponse(
                 _page("GitLab Login Failed", "<p>GitLab OAuth failed.</p>"),
                 status_code=status.HTTP_502_BAD_GATEWAY,
             )
-            response.delete_cookie(settings.oauth_state_cookie_name, path="/")
+            response.delete_cookie(runtime.settings.oauth_state_cookie_name, path="/")
             return response
 
-        session = resolved_session_store.create_session(identity)
+        if not runtime.authorizer.is_authorized(
+            identity=oauth_result.identity,
+            access_token=oauth_result.access_token,
+        ):
+            response = RedirectResponse(
+                "/access-denied",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+            response.delete_cookie(runtime.settings.oauth_state_cookie_name, path="/")
+            return response
+
+        session = runtime.session_store.create_session(oauth_result.identity)
         response = RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
         _set_cookie(
             response,
-            name=settings.session_cookie_name,
+            name=runtime.settings.session_cookie_name,
             value=session.id,
-            max_age=settings.session_cookie_max_age_seconds,
-            settings=settings,
+            max_age=runtime.settings.session_cookie_max_age_seconds,
+            settings=runtime.settings,
         )
-        response.delete_cookie(settings.oauth_state_cookie_name, path="/")
+        response.delete_cookie(runtime.settings.oauth_state_cookie_name, path="/")
         return response
 
     @fastapi_app.post("/logout", tags=["auth"])
     async def logout(request: Request) -> Response:
-        session_id = request.cookies.get(settings.session_cookie_name)
-        session = resolved_session_store.get_session(session_id)
+        session_id = request.cookies.get(runtime.settings.session_cookie_name)
+        session = runtime.session_store.get_session(session_id)
         body = await request.body()
         form = urllib.parse.parse_qs(body.decode("utf-8"))
         submitted_csrf_token = form.get("csrf_token", [""])[0]
@@ -157,10 +189,10 @@ def create_app(
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
 
-        resolved_session_store.delete_session(session_id)
+        runtime.session_store.delete_session(session_id)
         response = RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
         response.delete_cookie(
-            settings.session_cookie_name,
+            runtime.settings.session_cookie_name,
             path="/",
         )
         return response
@@ -173,6 +205,30 @@ def create_app(
         )
 
     return fastapi_app
+
+
+def _build_auth_runtime(
+    *,
+    auth_settings: AuthSettings | None,
+    oauth_client: GitLabOAuthClient | None,
+    group_membership_client: GitLabGroupMembershipClient | None,
+    session_store: InMemorySessionStore | None,
+    oauth_state_store: OAuthStateStore | None,
+) -> AuthRuntime:
+    settings = auth_settings or AuthSettings.from_env()
+    resolved_membership_client = (
+        group_membership_client or UrllibGitLabGroupMembershipClient(settings)
+    )
+    return AuthRuntime(
+        settings=settings,
+        oauth_client=oauth_client or UrllibGitLabOAuthClient(settings),
+        authorizer=GitLabGroupAuthorizer(
+            settings=settings,
+            membership_client=resolved_membership_client,
+        ),
+        session_store=session_store or InMemorySessionStore(),
+        oauth_state_store=oauth_state_store or OAuthStateStore(),
+    )
 
 
 app = create_app()

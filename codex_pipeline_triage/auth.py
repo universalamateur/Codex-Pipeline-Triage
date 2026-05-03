@@ -16,10 +16,12 @@ from pydantic import BaseModel, ConfigDict
 
 DEFAULT_APP_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_GITLAB_BASE_URL = "https://gitlab.com"
+GITLAB_GROUP_ALLOWLIST_MODE = "gitlab_group"
+GITLAB_OAUTH_SCOPES = ("read_user", "read_api")
 
 
 class AuthSettings(BaseModel):
-    """Configuration needed for the Spike 2.1 GitLab login path."""
+    """Configuration needed for GitLab login and app authorization."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -32,6 +34,8 @@ class AuthSettings(BaseModel):
     session_cookie_max_age_seconds: int = 60 * 60 * 8
     oauth_state_max_age_seconds: int = 60 * 10
     secure_cookies: bool | None = None
+    auth_allowlist_mode: str = ""
+    allowed_gitlab_group_id: int | None = None
 
     @classmethod
     def from_env(cls) -> AuthSettings:
@@ -47,6 +51,10 @@ class AuthSettings(BaseModel):
             gitlab_oauth_client_id=os.environ.get("GITLAB_OAUTH_CLIENT_ID", ""),
             gitlab_oauth_client_secret=os.environ.get("GITLAB_OAUTH_CLIENT_SECRET", ""),
             secure_cookies=secure_cookies,
+            auth_allowlist_mode=os.environ.get("AUTH_ALLOWLIST_MODE", ""),
+            allowed_gitlab_group_id=_optional_int(
+                os.environ.get("ALLOWED_GITLAB_GROUP_ID")
+            ),
         )
 
     @property
@@ -62,6 +70,13 @@ class AuthSettings(BaseModel):
     @property
     def is_oauth_configured(self) -> bool:
         return bool(self.gitlab_oauth_client_id and self.gitlab_oauth_client_secret)
+
+    @property
+    def is_group_authorization_configured(self) -> bool:
+        return (
+            self.auth_allowlist_mode == GITLAB_GROUP_ALLOWLIST_MODE
+            and self.allowed_gitlab_group_id is not None
+        )
 
 
 class GitLabIdentity(BaseModel):
@@ -85,15 +100,46 @@ class SessionRecord(BaseModel):
     created_at: datetime
 
 
+@dataclass(frozen=True)
+class GitLabOAuthResult:
+    """OAuth result kept server-side only for immediate authorization."""
+
+    identity: GitLabIdentity
+    access_token: str = field(repr=False)
+
+
 class OAuthError(RuntimeError):
     """Raised when the GitLab OAuth exchange fails."""
+
+
+class AuthorizationError(RuntimeError):
+    """Raised when the GitLab authorization lookup cannot be completed."""
 
 
 class GitLabOAuthClient(Protocol):
     """Boundary for exchanging an OAuth code for a GitLab identity."""
 
-    def exchange_code_for_user(self, code: str, redirect_uri: str) -> GitLabIdentity:
+    def exchange_code_for_user(
+        self,
+        code: str,
+        redirect_uri: str,
+    ) -> GitLabOAuthResult:
         """Return a GitLab identity without exposing OAuth token material."""
+        raise NotImplementedError
+
+
+class GitLabGroupMembershipClient(Protocol):
+    """Boundary for checking GitLab group membership."""
+
+    def is_group_member(
+        self,
+        *,
+        access_token: str,
+        gitlab_user_id: int,
+        group_id: int,
+    ) -> bool:
+        """Return whether the authenticated user belongs to the configured group."""
+        raise NotImplementedError
 
 
 class UrllibGitLabOAuthClient:
@@ -103,9 +149,13 @@ class UrllibGitLabOAuthClient:
         self._settings = settings
         self._timeout_seconds = timeout_seconds
 
-    def exchange_code_for_user(self, code: str, redirect_uri: str) -> GitLabIdentity:
+    def exchange_code_for_user(
+        self,
+        code: str,
+        redirect_uri: str,
+    ) -> GitLabOAuthResult:
         token = self._exchange_code_for_token(code=code, redirect_uri=redirect_uri)
-        return self._fetch_user(token)
+        return GitLabOAuthResult(identity=self._fetch_user(token), access_token=token)
 
     def _exchange_code_for_token(self, code: str, redirect_uri: str) -> str:
         if not self._settings.is_oauth_configured:
@@ -173,6 +223,91 @@ class UrllibGitLabOAuthClient:
         return f"{str(self._settings.gitlab_base_url).rstrip('/')}{path}"
 
 
+class UrllibGitLabGroupMembershipClient:
+    """Small GitLab group membership client for the demo authorization gate."""
+
+    def __init__(self, settings: AuthSettings, timeout_seconds: float = 15.0) -> None:
+        self._settings = settings
+        self._timeout_seconds = timeout_seconds
+
+    def is_group_member(
+        self,
+        *,
+        access_token: str,
+        gitlab_user_id: int,
+        group_id: int,
+    ) -> bool:
+        request = urllib.request.Request(
+            self._url(f"/api/v4/groups/{group_id}/members/all/{gitlab_user_id}"),
+            headers={"Authorization": f"Bearer {access_token}"},
+            method="GET",
+        )
+        try:
+            response_data = self._read_json(request)
+        except AuthorizationError as exc:
+            if str(exc) == "GitLab group member was not found":
+                return False
+            raise
+
+        return response_data.get("id") == gitlab_user_id
+
+    def _read_json(self, request: urllib.request.Request) -> dict[str, object]:
+        try:
+            with urllib.request.urlopen(
+                request,
+                timeout=self._timeout_seconds,
+            ) as response:
+                raw_body = response.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise AuthorizationError("GitLab group member was not found") from exc
+            raise AuthorizationError("GitLab group lookup failed") from exc
+        except urllib.error.URLError as exc:
+            raise AuthorizationError("GitLab group lookup failed") from exc
+
+        try:
+            parsed = json.loads(raw_body.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise AuthorizationError("GitLab group response was not JSON") from exc
+
+        if not isinstance(parsed, dict):
+            raise AuthorizationError("GitLab group response was not an object")
+        return parsed
+
+    def _url(self, path: str) -> str:
+        return f"{str(self._settings.gitlab_base_url).rstrip('/')}{path}"
+
+
+@dataclass(frozen=True)
+class GitLabGroupAuthorizer:
+    """Apply the configured GitLab group authorization policy."""
+
+    settings: AuthSettings
+    membership_client: GitLabGroupMembershipClient
+
+    def is_authorized(
+        self,
+        *,
+        identity: GitLabIdentity,
+        access_token: str,
+    ) -> bool:
+        if not self.settings.is_group_authorization_configured:
+            return False
+
+        group_id = self.settings.allowed_gitlab_group_id
+        if group_id is None:
+            return False
+
+        try:
+            return self.membership_client.is_group_member(
+                access_token=access_token,
+                gitlab_user_id=identity.gitlab_user_id,
+                group_id=group_id,
+            )
+        except AuthorizationError:
+            return False
+
+
 @dataclass
 class OAuthStateStore:
     """One-time server-side OAuth state store."""
@@ -224,7 +359,7 @@ def build_gitlab_authorization_url(settings: AuthSettings, state: str) -> str:
             "client_id": settings.gitlab_oauth_client_id,
             "redirect_uri": settings.callback_url,
             "response_type": "code",
-            "scope": "read_user",
+            "scope": " ".join(GITLAB_OAUTH_SCOPES),
             "state": state,
         }
     )
@@ -240,3 +375,12 @@ def _optional_bool(value: str | None) -> bool | None:
     if normalized in {"0", "false", "no", "off"}:
         return False
     raise ValueError("SESSION_COOKIE_SECURE must be a boolean value")
+
+
+def _optional_int(value: str | None) -> int | None:
+    if value is None or not value.strip():
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError("ALLOWED_GITLAB_GROUP_ID must be an integer") from exc
