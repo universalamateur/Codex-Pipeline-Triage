@@ -52,7 +52,28 @@ def test_glab_api_uses_controlled_environment(tmp_path: Path) -> None:
     env = run_mock.call_args.kwargs["env"]
     assert env["GLAB_CONFIG_DIR"] == str(tmp_path)
     assert env["GITLAB_TOKEN"] == "secret-token"
-    assert env["NO_PROMPT"] == "true"
+    assert env["GLAB_NO_PROMPT"] == "true"
+    assert "NO_PROMPT" not in env
+
+
+def test_glab_api_requires_stdout_to_be_json(tmp_path: Path) -> None:
+    completed = CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=(
+            "DEPRECATION WARNING: The environment variable NO_PROMPT has been "
+            'deprecated.\n{"id": 1}'
+        ),
+        stderr="",
+    )
+    executor = GlabExecutor(config_dir=tmp_path)
+
+    with patch(
+        "codex_pipeline_triage.gitlab.subprocess.run",
+        return_value=completed,
+    ):
+        with pytest.raises(GlabExecutorError, match="invalid JSON"):
+            executor.api(GlabApiRequest(endpoint="projects/1"))
 
 
 def test_glab_api_reports_cli_failures(tmp_path: Path) -> None:

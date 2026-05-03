@@ -91,7 +91,7 @@ class GlabExecutor:
     def _build_env(self, *, token: str | None) -> dict[str, str]:
         env = {
             "GLAB_CONFIG_DIR": str(self.config_dir),
-            "NO_PROMPT": "true",
+            "GLAB_NO_PROMPT": "true",
             "PATH": os.environ.get("PATH", ""),
         }
         if token is not None:

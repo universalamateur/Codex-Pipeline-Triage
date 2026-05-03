@@ -16,6 +16,7 @@ from codex_pipeline_triage.auth import (
     GitLabIdentity,
     GitLabOAuthResult,
 )
+from tests.codex_pipeline_triage.helpers import make_auth_settings
 
 
 class OAuthClientLike(Protocol):
@@ -74,26 +75,15 @@ class FakeGroupMembershipClient:
         return self.is_member
 
 
-def make_settings() -> AuthSettings:
-    return AuthSettings(
-        app_base_url="https://testserver",
-        gitlab_base_url="https://gitlab.example.com",
-        gitlab_oauth_client_id="client-id",
-        gitlab_oauth_client_secret="client-secret",
-        secure_cookies=True,
-        auth_allowlist_mode="gitlab_group",
-        allowed_gitlab_group_id=59032064,
-    )
-
-
 def make_client(
     oauth_client: OAuthClientLike,
     group_membership_client: FakeGroupMembershipClient | None = None,
     auth_settings: AuthSettings | None = None,
 ) -> TestClient:
+    settings = auth_settings or make_auth_settings()
     return TestClient(
         create_app(
-            auth_settings=auth_settings or make_settings(),
+            auth_settings=settings,
             oauth_client=oauth_client,
             group_membership_client=group_membership_client
             or FakeGroupMembershipClient(),
@@ -195,7 +185,7 @@ def test_oauth_callback_denies_non_member_before_session_creation() -> None:
 def test_oauth_callback_fails_closed_when_group_config_is_missing() -> None:
     fake_oauth_client = FakeOAuthClient()
     group_membership_client = FakeGroupMembershipClient(is_member=True)
-    settings = make_settings().model_copy(
+    settings = make_auth_settings().model_copy(
         update={"auth_allowlist_mode": "", "allowed_gitlab_group_id": None}
     )
 

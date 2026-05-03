@@ -16,9 +16,15 @@ from codex_pipeline_triage.auth import (
     InMemorySessionStore,
     OAuthError,
     OAuthStateStore,
+    SessionRecord,
     UrllibGitLabGroupMembershipClient,
     UrllibGitLabOAuthClient,
     build_gitlab_authorization_url,
+)
+from codex_pipeline_triage.projects import (
+    ProjectConnectionError,
+    ProjectConnector,
+    build_default_project_connector,
 )
 
 SERVICE_NAME = "codex-pipeline-triage"
@@ -44,6 +50,8 @@ class AuthRuntime:
     oauth_state_store: OAuthStateStore
 
 
+# FastAPI app factories collect dependency overrides and route closures in one place.
+# pylint: disable=too-many-arguments,too-many-locals,too-many-statements
 def create_app(
     *,
     auth_settings: AuthSettings | None = None,
@@ -51,6 +59,7 @@ def create_app(
     group_membership_client: GitLabGroupMembershipClient | None = None,
     session_store: InMemorySessionStore | None = None,
     oauth_state_store: OAuthStateStore | None = None,
+    project_connector: ProjectConnector | None = None,
 ) -> FastAPI:
     """Create the FastAPI app for local development and tests."""
     runtime = _build_auth_runtime(
@@ -60,6 +69,16 @@ def create_app(
         session_store=session_store,
         oauth_state_store=oauth_state_store,
     )
+    resolved_project_connector = project_connector
+
+    def get_project_connector() -> ProjectConnector:
+        nonlocal resolved_project_connector
+        if resolved_project_connector is None:
+            resolved_project_connector = build_default_project_connector(
+                runtime.settings
+            )
+        return resolved_project_connector
+
     fastapi_app = FastAPI(
         title="Codex Pipeline Triage",
         version="0.1.0",
@@ -71,9 +90,7 @@ def create_app(
 
     @fastapi_app.get("/", response_class=HTMLResponse, tags=["auth"])
     async def index(request: Request) -> HTMLResponse:
-        session = runtime.session_store.get_session(
-            request.cookies.get(runtime.settings.session_cookie_name)
-        )
+        session = _get_current_session(request, runtime)
         if session is None:
             return HTMLResponse(
                 _page(
@@ -90,6 +107,7 @@ def create_app(
                 (
                     f"<p>Signed in as {username}.</p>"
                     "<p>GitLab group authorization passed.</p>"
+                    '<p><a href="/projects">Connected projects</a></p>'
                     '<form action="/logout" method="post">'
                     f'<input type="hidden" name="csrf_token" value="{csrf_token}">'
                     '<button type="submit">Log out</button>'
@@ -197,6 +215,82 @@ def create_app(
         )
         return response
 
+    @fastapi_app.get("/projects", response_class=HTMLResponse, tags=["projects"])
+    async def projects(request: Request) -> Response:
+        session = _get_current_session(request, runtime)
+        if session is None:
+            return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+
+        connected_projects = get_project_connector().list_projects_for_user(
+            session.identity.gitlab_user_id
+        )
+        csrf_token = _escape_html(session.csrf_token)
+        if connected_projects:
+            project_items = "".join(
+                "<li>"
+                f"{_escape_html(project.gitlab_project_path)} "
+                f"(#{project.gitlab_project_id})"
+                "</li>"
+                for project in connected_projects
+            )
+            project_list = f"<ul>{project_items}</ul>"
+        else:
+            project_list = "<p>No connected projects.</p>"
+
+        return HTMLResponse(
+            _page(
+                "Connected Projects",
+                (
+                    f"{project_list}"
+                    '<p><a href="/projects/connect">Connect project</a></p>'
+                    '<form action="/logout" method="post">'
+                    f'<input type="hidden" name="csrf_token" value="{csrf_token}">'
+                    '<button type="submit">Log out</button>'
+                    "</form>"
+                ),
+            )
+        )
+
+    @fastapi_app.get(
+        "/projects/connect",
+        response_class=HTMLResponse,
+        tags=["projects"],
+    )
+    async def connect_project_form(request: Request) -> Response:
+        session = _get_current_session(request, runtime)
+        if session is None:
+            return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+
+        return HTMLResponse(_connect_project_page(session))
+
+    @fastapi_app.post("/projects/connect", tags=["projects"])
+    async def connect_project(request: Request) -> Response:
+        session = _get_current_session(request, runtime)
+        if session is None:
+            return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+
+        body = await request.body()
+        form = urllib.parse.parse_qs(body.decode("utf-8"))
+        if _form_value(form, "csrf_token") != session.csrf_token:
+            return HTMLResponse(
+                _page("Connect Project Failed", "<p>Invalid session.</p>"),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            get_project_connector().connect_project(
+                project_reference=_form_value(form, "project_reference"),
+                project_token=_form_value(form, "project_token"),
+                connected_by_gitlab_user_id=session.identity.gitlab_user_id,
+            )
+        except ProjectConnectionError as exc:
+            return HTMLResponse(
+                _connect_project_page(session, error=str(exc)),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return RedirectResponse("/projects", status_code=status.HTTP_303_SEE_OTHER)
+
     @fastapi_app.get("/access-denied", response_class=HTMLResponse, tags=["auth"])
     async def access_denied() -> HTMLResponse:
         return HTMLResponse(
@@ -228,6 +322,15 @@ def _build_auth_runtime(
         ),
         session_store=session_store or InMemorySessionStore(),
         oauth_state_store=oauth_state_store or OAuthStateStore(),
+    )
+
+
+def _get_current_session(
+    request: Request,
+    runtime: AuthRuntime,
+) -> SessionRecord | None:
+    return runtime.session_store.get_session(
+        request.cookies.get(runtime.settings.session_cookie_name)
     )
 
 
@@ -266,6 +369,36 @@ def _page(title: str, body: str) -> str:
         "</body>"
         "</html>"
     )
+
+
+def _connect_project_page(
+    session: SessionRecord,
+    *,
+    error: str | None = None,
+) -> str:
+    error_html = f"<p>{_escape_html(error)}</p>" if error else ""
+    csrf_token = _escape_html(session.csrf_token)
+    return _page(
+        "Connect Project",
+        (
+            f"{error_html}"
+            '<form action="/projects/connect" method="post">'
+            f'<input type="hidden" name="csrf_token" value="{csrf_token}">'
+            "<label>Project URL or ID "
+            '<input name="project_reference" required></label>'
+            "<label>Project token "
+            '<input name="project_token" type="password" autocomplete="off" required>'
+            "</label>"
+            '<button type="submit">Connect project</button>'
+            "</form>"
+            "<p>Selected pipeline logs, diffs, metadata, and comments may be "
+            "processed by OpenAI Codex during triage.</p>"
+        ),
+    )
+
+
+def _form_value(form: dict[str, list[str]], field_name: str) -> str:
+    return form.get(field_name, [""])[0]
 
 
 def _escape_html(value: str) -> str:
