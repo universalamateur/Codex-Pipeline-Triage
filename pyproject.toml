@@ -1,0 +1,84 @@
+[project]
+name = "codex-pipeline-triage"
+version = "0.1.0"
+description = "GitLab pipeline failure triage workflow powered by Codex."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0",
+    "pydantic>=2.8.0",
+    "uvicorn[standard]>=0.30.0",
+]
+
+[dependency-groups]
+dev = [
+    "black>=24.0.0",
+    "flake8>=7.0.0",
+    "flake8-pyproject>=1.2.3",
+    "httpx>=0.27.0",
+    "isort>=5.13.0",
+    "mypy>=1.10.0",
+    "pylint>=3.2.0",
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+]
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
+line_length = 88
+known_first_party = ["codex_pipeline_triage"]
+skip = [".local", ".venv"]
+
+[tool.flake8]
+max-line-length = 88
+extend-ignore = ["E203", "W503"]
+exclude = [
+    ".git",
+    ".local",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+]
+
+[tool.pylint.main]
+py-version = "3.10"
+ignore = [".venv", ".local"]
+
+[tool.pylint.format]
+max-line-length = 88
+
+[tool.pylint.messages_control]
+disable = [
+    "missing-function-docstring",
+    "too-few-public-methods",
+]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unreachable = true
+exclude = [
+    "^\\.local/",
+    "^\\.venv/",
+]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["codex_pipeline_triage"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

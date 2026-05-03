@@ -1,4 +1,11 @@
 .local/
+.codex/
+.venv/
+.pytest_cache/
+.mypy_cache/
+__pycache__/
+.coverage
+htmlcov/
 .env
 .env.*
 !.env.example
