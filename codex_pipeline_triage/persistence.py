@@ -63,6 +63,10 @@ class PersistenceStore(Protocol):
         self, connected_project_id: str
     ) -> list[TriageRun]: ...
 
+    def get_triage_run_by_pipeline(
+        self, *, gitlab_project_id: int, pipeline_id: int
+    ) -> TriageRun | None: ...
+
     def create_action_log(self, action_log: GitLabActionLog) -> GitLabActionLog: ...
 
     def get_action_log(self, record_id: str) -> GitLabActionLog | None: ...
@@ -199,6 +203,25 @@ class SqliteStore:
             connected_project_id,
             TriageRun,
         )
+
+    def get_triage_run_by_pipeline(
+        self, *, gitlab_project_id: int, pipeline_id: int
+    ) -> TriageRun | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT payload
+                FROM triage_runs
+                WHERE gitlab_project_id = ? AND pipeline_id = ?
+                ORDER BY id
+                LIMIT 1
+                """,
+                (gitlab_project_id, pipeline_id),
+            ).fetchone()
+
+        if row is None:
+            return None
+        return TriageRun.model_validate_json(row["payload"])
 
     def create_action_log(self, action_log: GitLabActionLog) -> GitLabActionLog:
         self._insert_record(

@@ -1,0 +1,25 @@
+{
+  "object_kind": "pipeline",
+  "object_attributes": {
+    "id": 9001,
+    "status": "failed",
+    "ref": "feature/checkout-tax",
+    "sha": "abc123"
+  },
+  "project": {
+    "id": 2002,
+    "path_with_namespace": "universalamateur1/checkout-service"
+  },
+  "builds": [
+    {
+      "id": 4001,
+      "name": "test",
+      "status": "failed"
+    },
+    {
+      "id": 4002,
+      "name": "lint",
+      "status": "success"
+    }
+  ]
+}

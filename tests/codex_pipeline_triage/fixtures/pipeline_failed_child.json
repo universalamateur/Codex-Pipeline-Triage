@@ -1,0 +1,22 @@
+{
+  "object_kind": "pipeline",
+  "object_attributes": {
+    "id": 9104,
+    "status": "failed",
+    "ref": "feature/downstream-check",
+    "sha": "childabc123",
+    "source": "parent_pipeline",
+    "tag": false
+  },
+  "project": {
+    "id": 2002,
+    "path_with_namespace": "universalamateur1/checkout-service"
+  },
+  "builds": [
+    {
+      "id": 4401,
+      "name": "child-test",
+      "status": "failed"
+    }
+  ]
+}

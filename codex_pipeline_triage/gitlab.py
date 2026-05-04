@@ -37,7 +37,7 @@ class GlabExecutor:
 
     def api(self, request: GlabApiRequest, *, token: str | None = None) -> JsonResponse:
         """Execute a GitLab API request and parse the JSON response."""
-        args = self._build_args(request)
+        args = self._build_args(request, output="json")
         env = self._build_env(token=token)
 
         try:
@@ -66,7 +66,29 @@ class GlabExecutor:
 
         return cast(JsonResponse, parsed)
 
-    def _build_args(self, request: GlabApiRequest) -> list[str]:
+    def api_text(self, request: GlabApiRequest, *, token: str | None = None) -> str:
+        """Execute a GitLab API request that returns raw text."""
+        args = self._build_args(request, output="text")
+        env = self._build_env(token=token)
+
+        try:
+            result = subprocess.run(
+                args,
+                capture_output=True,
+                check=False,
+                env=env,
+                text=True,
+                timeout=self.timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise GlabExecutorError("glab api timed out") from exc
+
+        if result.returncode != 0:
+            raise GlabExecutorError(result.stderr.strip() or "glab api failed")
+
+        return result.stdout
+
+    def _build_args(self, request: GlabApiRequest, *, output: str) -> list[str]:
         endpoint = request.endpoint.strip()
         if not endpoint or endpoint.startswith("-") or "://" in endpoint:
             raise ValueError("endpoint must be a GitLab API path")
@@ -79,9 +101,9 @@ class GlabExecutor:
             self.hostname,
             "--method",
             request.method,
-            "--output",
-            "json",
         ]
+        if output == "json":
+            args.extend(["--output", "json"])
 
         for key, value in (request.fields or {}).items():
             args.extend(["--field", f"{key}={value}"])

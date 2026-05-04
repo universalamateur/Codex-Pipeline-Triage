@@ -86,6 +86,27 @@ Success screenshot:
 - Note includes hypothesis, evidence, confidence, suggested fix, and action policy.
 - App triage-run detail shows adapter mode, GitLab target, and persisted output.
 
+## Manual Webhook Testing
+
+GitLab cannot deliver webhooks to `127.0.0.1` on a local laptop. For manual
+webhook setup and replay gates, expose the local app with a temporary tunnel:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8765
+```
+
+Use the generated HTTPS tunnel origin as the temporary `APP_BASE_URL` and
+configure GitLab with the app-generated webhook path. Do not commit or paste the
+ephemeral tunnel URL, tunnel session logs, webhook secrets, project tokens,
+OAuth callback values, cookies, or raw webhook payloads from real projects.
+
+Manual webhook configuration for the demo project:
+
+- Enable Pipeline events.
+- Keep Job events disabled.
+- Keep SSL verification enabled.
+- Use only synthetic GitLab demo projects.
+
 ## Demo Flow V2
 
 V2 adds branch pipeline issue reporting:

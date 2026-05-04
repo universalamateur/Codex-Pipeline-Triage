@@ -21,10 +21,25 @@ from codex_pipeline_triage.auth import (
     UrllibGitLabOAuthClient,
     build_gitlab_authorization_url,
 )
+from codex_pipeline_triage.context import (
+    PipelineContextBuilder,
+    build_default_context_builder,
+)
+from codex_pipeline_triage.models import ConnectedProject
 from codex_pipeline_triage.projects import (
     ProjectConnectionError,
     ProjectConnector,
     build_default_project_connector,
+)
+from codex_pipeline_triage.reporting import (
+    MockMrReporter,
+    build_default_mock_mr_reporter,
+)
+from codex_pipeline_triage.webhooks import (
+    GitLabWebhookIntake,
+    WebhookBadRequestError,
+    WebhookIgnoredError,
+    WebhookUnauthorizedError,
 )
 
 SERVICE_NAME = "codex-pipeline-triage"
@@ -60,6 +75,8 @@ def create_app(
     session_store: InMemorySessionStore | None = None,
     oauth_state_store: OAuthStateStore | None = None,
     project_connector: ProjectConnector | None = None,
+    context_builder: PipelineContextBuilder | None = None,
+    mock_mr_reporter: MockMrReporter | None = None,
 ) -> FastAPI:
     """Create the FastAPI app for local development and tests."""
     runtime = _build_auth_runtime(
@@ -70,6 +87,8 @@ def create_app(
         oauth_state_store=oauth_state_store,
     )
     resolved_project_connector = project_connector
+    resolved_context_builder = context_builder
+    resolved_mock_mr_reporter = mock_mr_reporter
 
     def get_project_connector() -> ProjectConnector:
         nonlocal resolved_project_connector
@@ -78,6 +97,23 @@ def create_app(
                 runtime.settings
             )
         return resolved_project_connector
+
+    def get_webhook_intake() -> GitLabWebhookIntake:
+        project_connector = get_project_connector()
+        nonlocal resolved_context_builder
+        if resolved_context_builder is None:
+            resolved_context_builder = build_default_context_builder(project_connector)
+        nonlocal resolved_mock_mr_reporter
+        if resolved_mock_mr_reporter is None:
+            resolved_mock_mr_reporter = build_default_mock_mr_reporter(
+                project_connector
+            )
+        return GitLabWebhookIntake(
+            project_connector=project_connector,
+            persistence_store=project_connector.persistence_store,
+            context_builder=resolved_context_builder,
+            mock_mr_reporter=resolved_mock_mr_reporter,
+        )
 
     fastapi_app = FastAPI(
         title="Codex Pipeline Triage",
@@ -230,6 +266,8 @@ def create_app(
                 "<li>"
                 f"{_escape_html(project.gitlab_project_path)} "
                 f"(#{project.gitlab_project_id})"
+                f' <a href="/projects/{_escape_html(project.id)}/webhook">'
+                "Webhook setup</a>"
                 "</li>"
                 for project in connected_projects
             )
@@ -291,12 +329,107 @@ def create_app(
 
         return RedirectResponse("/projects", status_code=status.HTTP_303_SEE_OTHER)
 
+    @fastapi_app.get(
+        "/projects/{connected_project_id}/webhook",
+        response_class=HTMLResponse,
+        tags=["projects"],
+    )
+    async def webhook_setup(
+        request: Request,
+        connected_project_id: str,
+    ) -> Response:
+        session = _get_current_session(request, runtime)
+        if session is None:
+            return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+
+        try:
+            connected_project = get_project_connector().get_project_for_user(
+                connected_project_id=connected_project_id,
+                gitlab_user_id=session.identity.gitlab_user_id,
+            )
+        except ProjectConnectionError:
+            return HTMLResponse(
+                _page("Project Not Found", "<p>Connected project was not found.</p>"),
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+
+        return HTMLResponse(
+            _webhook_setup_page(
+                settings=runtime.settings,
+                session=session,
+                connected_project=connected_project,
+            )
+        )
+
+    @fastapi_app.post(
+        "/projects/{connected_project_id}/webhook-secret",
+        response_class=HTMLResponse,
+        tags=["projects"],
+    )
+    async def generate_webhook_secret(
+        request: Request,
+        connected_project_id: str,
+    ) -> Response:
+        session = _get_current_session(request, runtime)
+        if session is None:
+            return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+
+        body = await request.body()
+        form = urllib.parse.parse_qs(body.decode("utf-8"))
+        if _form_value(form, "csrf_token") != session.csrf_token:
+            return HTMLResponse(
+                _page("Webhook Setup Failed", "<p>Invalid session.</p>"),
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            secret_setup = get_project_connector().generate_webhook_secret(
+                connected_project_id=connected_project_id,
+                gitlab_user_id=session.identity.gitlab_user_id,
+            )
+        except ProjectConnectionError as exc:
+            return HTMLResponse(
+                _page("Webhook Setup Failed", f"<p>{_escape_html(str(exc))}</p>"),
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+
+        return HTMLResponse(
+            _webhook_setup_page(
+                settings=runtime.settings,
+                session=session,
+                connected_project=secret_setup.connected_project,
+                raw_secret=secret_setup.raw_secret,
+            )
+        )
+
     @fastapi_app.get("/access-denied", response_class=HTMLResponse, tags=["auth"])
     async def access_denied() -> HTMLResponse:
         return HTMLResponse(
             _page("Access Denied", "<p>Your GitLab account is not authorized.</p>"),
             status_code=status.HTTP_403_FORBIDDEN,
         )
+
+    @fastapi_app.post("/webhooks/gitlab/{connected_project_id}", tags=["webhooks"])
+    async def gitlab_webhook(
+        request: Request,
+        connected_project_id: str,
+    ) -> Response:
+        raw_body = await request.body()
+        try:
+            result = await get_webhook_intake().handle(
+                connected_project_id=connected_project_id,
+                event_header=request.headers.get("X-Gitlab-Event"),
+                token_header=request.headers.get("X-Gitlab-Token"),
+                raw_body=raw_body,
+            )
+        except WebhookUnauthorizedError:
+            return Response(status_code=status.HTTP_401_UNAUTHORIZED)
+        except WebhookIgnoredError:
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+        except WebhookBadRequestError:
+            return Response(status_code=status.HTTP_400_BAD_REQUEST)
+
+        return Response(status_code=result.status_code)
 
     return fastapi_app
 
@@ -393,6 +526,55 @@ def _connect_project_page(
             "</form>"
             "<p>Selected pipeline logs, diffs, metadata, and comments may be "
             "processed by OpenAI Codex during triage.</p>"
+        ),
+    )
+
+
+def _webhook_setup_page(
+    *,
+    settings: AuthSettings,
+    session: SessionRecord,
+    connected_project: ConnectedProject,
+    raw_secret: str | None = None,
+) -> str:
+    project_id = connected_project.id
+    webhook_url = f"{settings.app_base_url.rstrip('/')}/webhooks/gitlab/{project_id}"
+    csrf_token = _escape_html(session.csrf_token)
+    project_path = _escape_html(connected_project.gitlab_project_path)
+    project_number = connected_project.gitlab_project_id
+    secret_hash = connected_project.webhook_secret_hash
+    if raw_secret is not None:
+        secret_block = (
+            "<p>Webhook secret shown once:</p>" f"<pre>{_escape_html(raw_secret)}</pre>"
+        )
+    elif secret_hash:
+        secret_block = (
+            "<p>Webhook secret has already been generated and is not shown again.</p>"
+        )
+    else:
+        secret_block = (
+            '<form action="/projects/'
+            f'{_escape_html(project_id)}/webhook-secret" method="post">'
+            f'<input type="hidden" name="csrf_token" value="{csrf_token}">'
+            '<button type="submit">Generate webhook secret</button>'
+            "</form>"
+        )
+
+    return _page(
+        "Webhook Setup",
+        (
+            f"<p>{project_path} (#{project_number})</p>"
+            f"<p>Webhook URL:</p><pre>{_escape_html(webhook_url)}</pre>"
+            f"{secret_block}"
+            "<ol>"
+            "<li>Open the GitLab project webhook settings.</li>"
+            "<li>Use the webhook URL shown here.</li>"
+            "<li>Paste the generated secret into GitLab's secret token field.</li>"
+            "<li>Enable Pipeline events.</li>"
+            "<li>Leave Job events disabled.</li>"
+            "<li>Save the webhook in GitLab.</li>"
+            "</ol>"
+            '<p><a href="/projects">Back to projects</a></p>'
         ),
     )
 

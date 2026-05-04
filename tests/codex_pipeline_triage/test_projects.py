@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 from unittest.mock import Mock
@@ -12,6 +14,7 @@ from fastapi.testclient import TestClient
 from codex_pipeline_triage.app import create_app
 from codex_pipeline_triage.auth import GitLabIdentity, InMemorySessionStore
 from codex_pipeline_triage.gitlab import GlabExecutor, GlabExecutorError
+from codex_pipeline_triage.models import ConnectedProject
 from codex_pipeline_triage.persistence import SqliteStore
 from codex_pipeline_triage.projects import (
     GitLabProjectMetadata,
@@ -63,10 +66,14 @@ class RecordingProjectTokenStore:
         self.tokens[secret_ref] = project_token
         return secret_ref
 
+    def retrieve_project_token(self, secret_ref: str) -> str:
+        return self.tokens[secret_ref]
+
 
 def make_authenticated_client(
     tmp_path: Path,
     gitlab_project_client: FakeGitLabProjectClient,
+    webhook_secret_generator: Callable[[], str] | None = None,
 ) -> tuple[TestClient, SqliteStore, RecordingProjectTokenStore]:
     settings = make_auth_settings()
     session_store = InMemorySessionStore()
@@ -84,6 +91,8 @@ def make_authenticated_client(
         gitlab_project_client=gitlab_project_client,
         token_store=token_store,
         persistence_store=persistence_store,
+        webhook_secret_generator=webhook_secret_generator
+        or (lambda: "test-webhook-secret"),
     )
     client = TestClient(
         create_app(
@@ -267,9 +276,116 @@ def test_glab_project_client_maps_executor_failure_to_connection_error() -> None
         )
 
 
+def test_webhook_secret_is_generated_once_and_hash_is_stored(
+    tmp_path: Path,
+) -> None:
+    raw_webhook_secret = "raw-webhook-secret"
+    client, persistence_store, _ = make_authenticated_client(
+        tmp_path,
+        FakeGitLabProjectClient(),
+        webhook_secret_generator=lambda: raw_webhook_secret,
+    )
+    connected_project = _connect_project_for_test(client, persistence_store)
+
+    first_response = client.post(
+        f"/projects/{connected_project.id}/webhook-secret",
+        data={"csrf_token": _csrf_token_from_cookie_session(client)},
+    )
+    stored_project = persistence_store.get_connected_project(connected_project.id)
+    second_response = client.post(
+        f"/projects/{connected_project.id}/webhook-secret",
+        data={"csrf_token": _csrf_token_from_cookie_session(client)},
+    )
+
+    assert first_response.status_code == 200
+    assert raw_webhook_secret in first_response.text
+    assert stored_project is not None
+    assert stored_project.webhook_secret_hash == _expected_secret_hash(
+        raw_webhook_secret
+    )
+    assert raw_webhook_secret not in stored_project.model_dump_json()
+    assert second_response.status_code == 200
+    assert raw_webhook_secret not in second_response.text
+    assert (
+        persistence_store.get_connected_project(connected_project.id) == stored_project
+    )
+
+
+def test_webhook_setup_page_shows_instructions_without_raw_secret_after_generation(
+    tmp_path: Path,
+) -> None:
+    raw_webhook_secret = "raw-webhook-secret"
+    client, persistence_store, _ = make_authenticated_client(
+        tmp_path,
+        FakeGitLabProjectClient(),
+        webhook_secret_generator=lambda: raw_webhook_secret,
+    )
+    connected_project = _connect_project_for_test(client, persistence_store)
+    client.post(
+        f"/projects/{connected_project.id}/webhook-secret",
+        data={"csrf_token": _csrf_token_from_cookie_session(client)},
+    )
+
+    response = client.get(f"/projects/{connected_project.id}/webhook")
+
+    assert response.status_code == 200
+    assert "https://testserver/webhooks/gitlab/" in response.text
+    assert "Pipeline events" in response.text
+    assert "Job events disabled" in response.text
+    assert "already been generated" in response.text
+    assert raw_webhook_secret not in response.text
+
+
+def test_webhook_secret_generation_rejects_invalid_csrf(
+    tmp_path: Path,
+) -> None:
+    raw_webhook_secret = "raw-webhook-secret"
+    client, persistence_store, _ = make_authenticated_client(
+        tmp_path,
+        FakeGitLabProjectClient(),
+        webhook_secret_generator=lambda: raw_webhook_secret,
+    )
+    connected_project = _connect_project_for_test(client, persistence_store)
+
+    response = client.post(
+        f"/projects/{connected_project.id}/webhook-secret",
+        data={"csrf_token": "wrong-token"},
+    )
+
+    assert response.status_code == 400
+    assert raw_webhook_secret not in response.text
+    stored_project = persistence_store.get_connected_project(connected_project.id)
+    assert stored_project is not None
+    assert stored_project.webhook_secret_hash == ""
+
+
 def _csrf_token_from_cookie_session(client: TestClient) -> str:
     response = client.get("/")
     marker = 'name="csrf_token" value="'
     start = response.text.index(marker) + len(marker)
     end = response.text.index('"', start)
     return response.text[start:end]
+
+
+def _connect_project_for_test(
+    client: TestClient,
+    persistence_store: SqliteStore,
+) -> ConnectedProject:
+    response = client.post(
+        "/projects/connect",
+        data={
+            "csrf_token": _csrf_token_from_cookie_session(client),
+            "project_reference": "universalamateur1/checkout-service",
+            "project_token": "raw-project-token",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    connected_projects = persistence_store.list_connected_projects_for_user(1001)
+    assert len(connected_projects) == 1
+    return connected_projects[0]
+
+
+def _expected_secret_hash(raw_secret: str) -> str:
+    digest = hashlib.sha256(raw_secret.encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"

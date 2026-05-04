@@ -1,0 +1,22 @@
+{
+  "object_kind": "pipeline",
+  "object_attributes": {
+    "id": 9102,
+    "status": "failed",
+    "ref": "feature/checkout-tax",
+    "sha": "branchabc123",
+    "source": "push",
+    "tag": false
+  },
+  "project": {
+    "id": 2002,
+    "path_with_namespace": "universalamateur1/checkout-service"
+  },
+  "builds": [
+    {
+      "id": 4201,
+      "name": "test",
+      "status": "failed"
+    }
+  ]
+}

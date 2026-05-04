@@ -1,0 +1,30 @@
+{
+  "object_kind": "pipeline",
+  "object_attributes": {
+    "id": 9101,
+    "status": "failed",
+    "ref": "feature/checkout-tax",
+    "sha": "mrabc123",
+    "source": "merge_request_event",
+    "tag": false
+  },
+  "merge_request": {
+    "id": 7001,
+    "iid": 17,
+    "source_branch": "feature/checkout-tax",
+    "target_branch": "main",
+    "source_project_id": 2002,
+    "target_project_id": 2002
+  },
+  "project": {
+    "id": 2002,
+    "path_with_namespace": "universalamateur1/checkout-service"
+  },
+  "builds": [
+    {
+      "id": 4101,
+      "name": "test",
+      "status": "failed"
+    }
+  ]
+}

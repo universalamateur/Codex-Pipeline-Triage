@@ -122,6 +122,50 @@ class TriageResult(AppModel):
     needs_human_review: bool
 
 
+class PipelineJobSummary(AppModel):
+    """Bounded pipeline job metadata fetched from GitLab."""
+
+    id: int
+    name: str
+    status: str
+    stage: str | None = None
+    web_url: str | None = None
+
+
+class JobTraceContext(AppModel):
+    """Redacted and truncated failed-job trace excerpt."""
+
+    job_id: int
+    job_name: str
+    trace_excerpt: str
+    trace_digest: str
+    truncated: bool
+
+
+class DiffFileContext(AppModel):
+    """Redacted and truncated diff excerpt."""
+
+    old_path: str
+    new_path: str
+    diff_excerpt: str
+    diff_digest: str
+    truncated: bool
+
+
+class PipelineContext(AppModel):
+    """Bounded context assembled before Codex triage."""
+
+    project_id: int
+    pipeline_id: int
+    pipeline_kind: PipelineKind
+    report_target: ReportTarget
+    jobs: list[PipelineJobSummary]
+    failed_job_traces: list[JobTraceContext]
+    diffs: list[DiffFileContext]
+    context_digest: str
+    created_at: datetime
+
+
 class ActionPlan(AppModel):
     """Policy-checked action selected after triage."""
 
@@ -168,6 +212,8 @@ class TriageRun(AppModel):
     adapter_mode: AdapterMode
     fallback_reason: str | None = None
     input_digest: str
+    context_json: PipelineContext | None = None
+    context_digest: str | None = None
     triage_json: TriageResult | None = None
     action_plan: ActionPlan | None = None
     gitlab_note_ids: list[int] = Field(default_factory=list)

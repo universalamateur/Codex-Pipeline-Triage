@@ -76,6 +76,34 @@ def test_glab_api_requires_stdout_to_be_json(tmp_path: Path) -> None:
             executor.api(GlabApiRequest(endpoint="projects/1"))
 
 
+def test_glab_api_text_does_not_require_json_output(tmp_path: Path) -> None:
+    completed = CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout="pytest failed\nAssertionError",
+        stderr="",
+    )
+    executor = GlabExecutor(config_dir=tmp_path)
+
+    with patch(
+        "codex_pipeline_triage.gitlab.subprocess.run",
+        return_value=completed,
+    ) as run_mock:
+        result = executor.api_text(GlabApiRequest(endpoint="projects/1/jobs/8/trace"))
+
+    assert result == "pytest failed\nAssertionError"
+    command = run_mock.call_args.args[0]
+    assert command == [
+        "glab",
+        "api",
+        "projects/1/jobs/8/trace",
+        "--hostname",
+        "gitlab.com",
+        "--method",
+        "GET",
+    ]
+
+
 def test_glab_api_reports_cli_failures(tmp_path: Path) -> None:
     completed = CompletedProcess(
         args=[],

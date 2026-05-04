@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
 import urllib.parse
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +40,14 @@ class GitLabProjectMetadata:
     namespace_id: int
 
 
+@dataclass(frozen=True)
+class WebhookSecretSetup:
+    """Result of preparing webhook setup for one connected project."""
+
+    connected_project: ConnectedProject
+    raw_secret: str | None = None
+
+
 class GitLabProjectClient(Protocol):
     """Boundary for validating a project token against GitLab metadata."""
 
@@ -58,6 +68,10 @@ class ProjectTokenSecretStore(Protocol):
         """Store the raw token and return a non-secret reference."""
         raise NotImplementedError
 
+    def retrieve_project_token(self, secret_ref: str) -> str:
+        """Resolve a non-secret reference to raw token material server-side."""
+        raise NotImplementedError
+
 
 @dataclass
 class InMemoryProjectTokenSecretStore:
@@ -69,6 +83,16 @@ class InMemoryProjectTokenSecretStore:
         secret_ref = f"secret-ref:{secrets.token_urlsafe(24)}"
         self._tokens[secret_ref] = project_token
         return secret_ref
+
+    def retrieve_project_token(self, secret_ref: str) -> str:
+        try:
+            return self._tokens[secret_ref]
+        except KeyError as exc:
+            raise ProjectConnectionError("Project token was not found") from exc
+
+
+def _generate_webhook_secret() -> str:
+    return secrets.token_urlsafe(32)
 
 
 @dataclass(frozen=True)
@@ -109,6 +133,7 @@ class ProjectConnector:
     gitlab_project_client: GitLabProjectClient
     token_store: ProjectTokenSecretStore
     persistence_store: PersistenceStore
+    webhook_secret_generator: Callable[[], str] = _generate_webhook_secret
 
     def connect_project(
         self,
@@ -153,6 +178,57 @@ class ProjectConnector:
 
     def list_projects_for_user(self, gitlab_user_id: int) -> list[ConnectedProject]:
         return self.persistence_store.list_connected_projects_for_user(gitlab_user_id)
+
+    def get_project_for_user(
+        self,
+        *,
+        connected_project_id: str,
+        gitlab_user_id: int,
+    ) -> ConnectedProject:
+        connected_project = self.get_any_project(connected_project_id)
+        if connected_project.connected_by_gitlab_user_id != gitlab_user_id:
+            raise ProjectConnectionError("Connected project was not found")
+        return connected_project
+
+    def get_any_project(self, connected_project_id: str) -> ConnectedProject:
+        # Pylint does not infer return types from structural Protocols here.
+        # pylint: disable-next=assignment-from-no-return
+        connected_project = self.persistence_store.get_connected_project(
+            connected_project_id
+        )
+        if connected_project is None:
+            raise ProjectConnectionError("Connected project was not found")
+        return connected_project
+
+    def generate_webhook_secret(
+        self,
+        *,
+        connected_project_id: str,
+        gitlab_user_id: int,
+    ) -> WebhookSecretSetup:
+        connected_project = self.get_project_for_user(
+            connected_project_id=connected_project_id,
+            gitlab_user_id=gitlab_user_id,
+        )
+        if connected_project.webhook_secret_hash:
+            return WebhookSecretSetup(connected_project=connected_project)
+
+        raw_secret = self.webhook_secret_generator()
+        if not raw_secret:
+            raise ProjectConnectionError("Webhook secret generation failed")
+
+        updated_project = connected_project.model_copy(
+            update={
+                "webhook_secret_hash": _hash_webhook_secret(raw_secret),
+                "updated_at": datetime.now(tz=timezone.utc),
+            }
+        )
+        return WebhookSecretSetup(
+            connected_project=self.persistence_store.update_connected_project(
+                updated_project
+            ),
+            raw_secret=raw_secret,
+        )
 
 
 def build_default_project_connector(settings: AuthSettings) -> ProjectConnector:
@@ -199,6 +275,11 @@ def _metadata_from_response(response: JsonResponse) -> GitLabProjectMetadata:
         display_name=name,
         namespace_id=namespace_id,
     )
+
+
+def _hash_webhook_secret(raw_secret: str) -> str:
+    digest = hashlib.sha256(raw_secret.encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
 
 
 def _normalize_project_reference(project_reference: str, gitlab_base_url: str) -> str:

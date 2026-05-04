@@ -1,0 +1,22 @@
+{
+  "object_kind": "pipeline",
+  "object_attributes": {
+    "id": 9105,
+    "status": "failed",
+    "ref": "",
+    "sha": "unknownabc123",
+    "source": "",
+    "tag": false
+  },
+  "project": {
+    "id": 2002,
+    "path_with_namespace": "universalamateur1/checkout-service"
+  },
+  "builds": [
+    {
+      "id": 4501,
+      "name": "unknown-test",
+      "status": "failed"
+    }
+  ]
+}

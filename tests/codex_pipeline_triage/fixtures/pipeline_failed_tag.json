@@ -1,0 +1,22 @@
+{
+  "object_kind": "pipeline",
+  "object_attributes": {
+    "id": 9103,
+    "status": "failed",
+    "ref": "v1.2.3",
+    "sha": "tagabc123",
+    "source": "push",
+    "tag": true
+  },
+  "project": {
+    "id": 2002,
+    "path_with_namespace": "universalamateur1/checkout-service"
+  },
+  "builds": [
+    {
+      "id": 4301,
+      "name": "release",
+      "status": "failed"
+    }
+  ]
+}
