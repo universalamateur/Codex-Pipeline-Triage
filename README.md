@@ -6,7 +6,13 @@ This repository is the implementation home for Codex Pipeline Triage. "Pipeline 
 
 ## Current State
 
-Status: demo hardening, ready for Spike 8.2 review.
+Status: demo-ready submission cut.
+
+The app now demonstrates the full failed-pipeline triage loop: GitLab login and
+group authorization, connected project setup, Pipeline Hook intake, server-side
+Codex analysis, schema-validated reporting back to GitLab, and optional
+human-approved bot fix MR creation with follow-up monitoring. Auto-merge and
+unbounded autonomous repair loops are intentionally out of scope.
 
 Implemented:
 
