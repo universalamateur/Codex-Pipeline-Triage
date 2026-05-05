@@ -5,7 +5,53 @@ Plain-language five-minute recording script for Codex Pipeline Triage.
 Do not show tokens, webhook secrets, cookies, tunnel URLs, raw webhook payloads,
 raw job traces, raw diffs, or raw Codex output while recording.
 
-## 0:00-0:25 - App And Access
+## Prep Tabs
+
+Open these in Chrome before recording. Keep the app server and Cloudflare tunnel
+terminals running, but hidden.
+
+Do not record the tunnel terminal, webhook secret, project token, OAuth callback
+values, cookies, raw payloads, `.env` contents, raw traces, or raw diffs.
+
+**App Tabs**
+
+- App home: `http://127.0.0.1:8765/`
+- Health check: `http://127.0.0.1:8765/health`
+- Connected projects: `http://127.0.0.1:8765/projects`
+- Webhook setup page:
+  `http://127.0.0.1:8765/projects/<connected_project_id>/webhook`
+- Run history:
+  `http://127.0.0.1:8765/projects/<connected_project_id>/runs`
+- Run detail:
+  `http://127.0.0.1:8765/projects/<connected_project_id>/runs/<run_id>`
+
+**GitLab Tabs**
+
+- Original fresh demo MR:
+  `https://gitlab.com/universalamateur1/dev-sec-ops-with-git-lab/-/merge_requests/<mr_iid>`
+- Original MR pipeline:
+  `https://gitlab.com/universalamateur1/dev-sec-ops-with-git-lab/-/pipelines/<pipeline_id>`
+- Codex note on the original MR:
+  `https://gitlab.com/universalamateur1/dev-sec-ops-with-git-lab/-/merge_requests/<mr_iid>#note_<codex_note_id>`
+- After clicking `Create bot fix MR`, open the bot fix MR:
+  `https://gitlab.com/universalamateur1/dev-sec-ops-with-git-lab/-/merge_requests/<fix_mr_iid>`
+- After clicking `Create bot fix MR`, open the action note:
+  `https://gitlab.com/universalamateur1/dev-sec-ops-with-git-lab/-/merge_requests/<mr_iid>#note_<action_note_id>`
+
+**Terminal**
+
+Do not share terminal for the main story.
+
+Only show a clean terminal at the end if you want to show test output. Keep env
+vars, tunnel logs, tokens, webhook secrets, and `.env` contents off screen.
+
+**How-Built Tabs**
+
+- Repo overview or README.
+- `SPEC.md` or `DEMO-SCRIPT.md`.
+- Clean test output or quality-gate summary.
+
+## 0:00-0:20 - App And Access
 
 **On Screen**
 
@@ -32,7 +78,7 @@ That group check is the app's RBAC gate.
 So authentication is GitLab OAuth, and authorization is GitLab group
 membership.
 
-## 0:25-0:55 - Webhook Setup
+## 0:20-0:45 - Webhook Setup
 
 **On Screen**
 
@@ -52,7 +98,7 @@ workflow.
 
 For this demo, only the synthetic GitLab project is connected.
 
-## 0:55-1:25 - Failed MR Pipeline
+## 0:45-1:10 - Failed MR Pipeline
 
 **On Screen**
 
@@ -70,13 +116,13 @@ This gives the app a clean failure to analyze.
 
 No customer or production repository is involved.
 
-## 1:25-2:05 - App Intake
+## 1:10-1:45 - App Intake And Persistence
 
 **On Screen**
 
 - Open run history.
 - Open the run detail page.
-- Show pipeline ID, run status, kind, adapter, and context digest.
+- Show pipeline ID, run status, kind, adapter, context digest, and note ID.
 
 **Say**
 
@@ -86,9 +132,14 @@ The app verified the project and webhook token.
 
 It classified the event as a merge request pipeline.
 
-Then it fetched bounded context, stored the run, and kept an audit trail.
+Then it fetched bounded context and stored the run.
 
-## 2:05-2:50 - Codex Result
+This page is reading persisted state: the pipeline, the adapter mode, the
+context digest, and the GitLab note ID.
+
+That gives the workflow an audit trail instead of a one-time log message.
+
+## 1:45-2:25 - Codex Result
 
 **On Screen**
 
@@ -109,7 +160,7 @@ The app validated that JSON before it posted anything to GitLab.
 The result is a clear MR note with the hypothesis, evidence, confidence, and
 suggested fix.
 
-## 2:50-3:35 - Safety Boundary
+## 2:25-3:05 - Safety Boundary
 
 **On Screen**
 
@@ -131,7 +182,7 @@ The default path is report-only.
 
 That is why the first action is just a GitLab MR note.
 
-## 3:35-4:30 - Controlled Fix MR
+## 3:05-3:45 - Controlled Fix MR
 
 **On Screen**
 
@@ -160,20 +211,37 @@ It does not auto-merge.
 The original MR gets an action note, and the app records the commit, fix MR, and
 monitor state.
 
-## 4:30-5:00 - Tests And Close
+This is the wow moment: a failed GitLab pipeline turns into a Codex triage note
+and a safe bot fix MR, without auto-merge.
+
+## 3:45-5:00 - How I Built This
 
 **On Screen**
 
+- Show the repo overview, README, or `SPEC.md`.
 - Show the latest test output or quality-gate summary.
-- End on the app run detail or GitLab MR notes.
+- End on the run detail with the fix MR, commit SHA, action logs, and monitor
+  row visible.
 
 **Say**
 
-The important paths are covered by tests and manual gates.
+I built this with Codex in small slices.
+
+First the spec, then webhook intake, then the Codex adapter, then GitLab
+write-back, and finally the controlled fix MR path.
+
+The stack is intentionally simple: Python, FastAPI, Pydantic, SQLite, and a
+deterministic GitLab executor.
+
+Codex is used programmatically inside the app, server-side only.
+
+The app persists each run, action log, GitLab note ID, fix MR ID, commit SHA,
+and monitor record.
+
+The meaningful tests cover auth gates, webhook validation, schema validation,
+policy checks, report posting, and the fix MR action.
 
 The demo is intentionally small.
-
-The key point is the boundary.
 
 Codex analyzes and recommends.
 

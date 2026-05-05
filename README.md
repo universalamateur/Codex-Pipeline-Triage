@@ -29,16 +29,54 @@ Implemented:
 
 ## Product Shape
 
-```text
-GitLab Pipeline event: failed
-  -> webhook receiver verifies project webhook token
-  -> intake planner classifies MR vs branch pipeline
-  -> context builder fetches jobs, traces, diffs, and metadata
-  -> Codex SDK triage agent returns structured analysis
-  -> action planner applies project policy
-  -> GitLab executor posts notes or creates issues
-  -> later controlled-actions stages may retry, open fix MRs, and monitor follow-up pipelines
+```mermaid
+flowchart LR
+    GL[GitLab MR pipeline fails] -->|Pipeline Hook only| WR[Webhook receiver]
+    WR --> WV{Verify webhook secret<br/>and connected project}
+    WV -->|valid failed pipeline| ID[Classify and dedupe run]
+    WV -->|Job Hook or duplicate| IG[Ignore]
+    WV -->|bad token, unknown project,<br/>malformed pipeline| FC[Fail closed]
+
+    ID --> CB[Build bounded context<br/>jobs, traces, diffs, metadata]
+    CB --> RT[Redact and truncate<br/>untrusted GitLab content]
+    RT --> CX[Server-side Codex SDK<br/>read-only, no approvals]
+    CX --> SV{Pydantic schema validation}
+    SV -->|valid| PR[Persist triage result]
+    SV -->|timeout or invalid| FB[Visible fallback result]
+
+    PR --> PG{Project policy gate}
+    FB --> PG
+
+    PG -->|default report path| PN[Post MR note or issue note]
+    PG -->|manual action allowed<br/>human click| BTN[Run-detail button:<br/>Create bot fix MR]
+
+    BTN --> EX[Deterministic glab executor]
+    EX --> BC[Create bot branch commit]
+    BC --> FM[Create fix MR]
+    FM --> PM[Create follow-up monitor]
+    PM --> FH[Later Pipeline Hook<br/>closes monitor]
+    FH --> MN[Post final monitor note]
+
+    PN --> AUD[(SQLite audit trail)]
+    MN --> AUD
+
+    OA[GitLab OAuth login] --> GA[Group authorization gate]
+    GA --> CP[Connected project setup]
+    CP --> PT[Project token stays server-side]
+    CP --> WH[Webhook secret stored as hash]
+
+    PT -. reads context .-> CB
+    PT -. posts notes .-> PN
+    PT -. controlled writes .-> EX
+    WH -. verifies .-> WV
 ```
+
+Pipeline events are the only root workflow trigger. Job Hooks and duplicates do
+not start workflows; invalid webhook, token, or project state fails closed.
+GitLab logs, diffs, and metadata are treated as untrusted, bounded and redacted
+before server-side Codex runs. Codex output must pass Pydantic validation, and
+every GitLab mutation goes through deterministic executor code after project
+policy checks.
 
 ## Core Decisions
 
