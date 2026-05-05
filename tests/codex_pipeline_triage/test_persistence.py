@@ -214,6 +214,9 @@ def test_sqlite_store_scopes_list_queries(tmp_path: Path) -> None:
     assert store.list_triage_runs_for_project(first_project.id) == [first_run]
     assert store.list_action_logs_for_run(first_run.id) == [first_action]
     assert store.list_pipeline_monitors_for_run(first_run.id) == [first_monitor]
+    assert store.list_pipeline_monitors_for_project(
+        first_project.gitlab_project_id
+    ) == [first_monitor]
 
 
 def test_sqlite_store_isolates_database_files(tmp_path: Path) -> None:

@@ -1,5 +1,6 @@
 """Tests for the controlled glab executor seam."""
 
+import json
 from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
@@ -74,6 +75,68 @@ def test_glab_api_requires_stdout_to_be_json(tmp_path: Path) -> None:
     ):
         with pytest.raises(GlabExecutorError, match="invalid JSON"):
             executor.api(GlabApiRequest(endpoint="projects/1"))
+
+
+def test_glab_api_can_send_json_body_through_stdin(tmp_path: Path) -> None:
+    completed = CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout='{"id": "abc123"}',
+        stderr="",
+    )
+    executor = GlabExecutor(config_dir=tmp_path, hostname="gitlab.example.com")
+
+    with patch(
+        "codex_pipeline_triage.gitlab.subprocess.run",
+        return_value=completed,
+    ) as run_mock:
+        result = executor.api(
+            GlabApiRequest(
+                endpoint="projects/1/repository/commits",
+                method="POST",
+                json_body={
+                    "branch": "codex-fix/pipeline-1",
+                    "actions": [
+                        {
+                            "action": "create",
+                            "file_path": "codex-triage/fix.md",
+                            "content": "bounded",
+                        }
+                    ],
+                },
+            ),
+            token="secret-token",
+        )
+
+    assert result == {"id": "abc123"}
+    command = run_mock.call_args.args[0]
+    assert command == [
+        "glab",
+        "api",
+        "projects/1/repository/commits",
+        "--hostname",
+        "gitlab.example.com",
+        "--method",
+        "POST",
+        "--output",
+        "json",
+        "--header",
+        "Content-Type: application/json",
+        "--input",
+        "-",
+    ]
+    assert "--field" not in command
+    stdin = run_mock.call_args.kwargs["input"]
+    assert json.loads(stdin) == {
+        "branch": "codex-fix/pipeline-1",
+        "actions": [
+            {
+                "action": "create",
+                "file_path": "codex-triage/fix.md",
+                "content": "bounded",
+            }
+        ],
+    }
 
 
 def test_glab_api_text_does_not_require_json_output(tmp_path: Path) -> None:

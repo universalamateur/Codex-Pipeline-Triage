@@ -19,6 +19,7 @@ from codex_pipeline_triage.models import (
     IssueTarget,
     MergeRequestTarget,
     PipelineKind,
+    PipelineMonitor,
     ReportTarget,
     TriageRun,
 )
@@ -112,6 +113,7 @@ class GitLabWebhookIntake:
     context_builder: PipelineContextBuilder | None = None
     mock_mr_reporter: MockMrReporter | None = None
 
+    # pylint: disable-next=too-many-locals,too-many-return-statements,too-many-branches
     async def handle(
         self,
         *,
@@ -143,6 +145,12 @@ class GitLabWebhookIntake:
             raise WebhookUnauthorizedError("Webhook project does not match")
         if payload.object_kind != "pipeline":
             raise WebhookIgnoredError("Webhook object is not a pipeline")
+        monitor_result = self._handle_monitor_event(
+            connected_project=connected_project,
+            payload=payload,
+        )
+        if monitor_result is not None:
+            return monitor_result
         if payload.object_attributes.status != "failed":
             return WebhookIntakeResult(status_code=204)
         classification = _classify_pipeline(payload)
@@ -231,6 +239,49 @@ class GitLabWebhookIntake:
             return WebhookIntakeResult(status_code=204, triage_run=reported_run)
         return WebhookIntakeResult(status_code=202, triage_run=reported_run)
 
+    def _handle_monitor_event(
+        self,
+        *,
+        connected_project: ConnectedProject,
+        payload: GitLabPipelinePayload,
+    ) -> WebhookIntakeResult | None:
+        if payload.object_attributes.status not in {"success", "failed"}:
+            return None
+        monitor = self._find_monitor(payload)
+        if monitor is None or self.mock_mr_reporter is None:
+            return None
+        if monitor.status != "waiting":
+            # Pylint does not infer return types from structural Protocols here.
+            # pylint: disable-next=assignment-from-no-return
+            triage_run = self.persistence_store.get_triage_run(monitor.triage_run_id)
+            return WebhookIntakeResult(
+                status_code=204,
+                triage_run=triage_run,
+            )
+        triage_run = self.mock_mr_reporter.report_monitor_event(
+            connected_project=connected_project,
+            monitor=monitor,
+            pipeline_id=payload.object_attributes.id,
+            pipeline_status=payload.object_attributes.status,
+            sha=payload.object_attributes.sha,
+        )
+        return WebhookIntakeResult(status_code=202, triage_run=triage_run)
+
+    def _find_monitor(
+        self,
+        payload: GitLabPipelinePayload,
+    ) -> PipelineMonitor | None:  # pylint: disable=not-an-iterable
+        # Pylint does not infer return types from structural Protocols here.
+        # pylint: disable-next=assignment-from-no-return
+        monitors = self.persistence_store.list_pipeline_monitors_for_project(
+            payload.project.id
+        )
+        # pylint: disable-next=not-an-iterable
+        for monitor in monitors:
+            if _monitor_matches_pipeline(monitor, payload):
+                return monitor
+        return None
+
 
 def _parse_payload(raw_body: bytes) -> GitLabPipelinePayload:
     try:
@@ -289,6 +340,20 @@ def _classify_pipeline(payload: GitLabPipelinePayload) -> PipelineClassification
         kind="unknown",
         report_target=InternalTarget(project_id=project_id),
     )
+
+
+def _monitor_matches_pipeline(
+    monitor: PipelineMonitor,
+    payload: GitLabPipelinePayload,
+) -> bool:
+    pipeline = payload.object_attributes
+    if monitor.expected_pipeline_id is not None:
+        return monitor.expected_pipeline_id == pipeline.id
+    if monitor.expected_ref != pipeline.ref:
+        return False
+    if monitor.expected_sha is not None and monitor.expected_sha != pipeline.sha:
+        return False
+    return True
 
 
 def _verify_webhook_token(token_header: str | None, expected_hash: str) -> bool:

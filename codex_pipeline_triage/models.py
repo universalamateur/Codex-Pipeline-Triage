@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 PipelineKind = Literal["merge_request", "branch", "tag", "child_or_parent", "unknown"]
 RunStatus = Literal[
@@ -120,6 +120,54 @@ class TriageResult(AppModel):
     ]
     suggested_fix: str = Field(min_length=1, max_length=800)
     needs_human_review: bool
+
+
+class FixFileChange(AppModel):
+    """One bounded file change proposed by the fixer stage."""
+
+    action: Literal["create", "update"]
+    file_path: str = Field(min_length=1, max_length=240)
+    content: str = Field(min_length=1, max_length=5000)
+
+    @field_validator("file_path")
+    @classmethod
+    def validate_file_path(cls, value: str) -> str:
+        """Reject paths that could escape a scratch checkout."""
+        normalized = value.strip()
+        parts = normalized.split("/")
+        if (
+            normalized.startswith("/")
+            or normalized.startswith("-")
+            or "://" in normalized
+            or any(part in {"", ".", ".."} for part in parts)
+        ):
+            raise ValueError("fix file path must be repo-relative")
+        return normalized
+
+
+class FixPatch(AppModel):
+    """Schema-validated fixer output before deterministic GitLab execution."""
+
+    source_branch: str = Field(min_length=1, max_length=160)
+    target_branch: str = Field(min_length=1, max_length=160)
+    commit_message: str = Field(min_length=1, max_length=200)
+    merge_request_title: str = Field(min_length=1, max_length=200)
+    merge_request_description: str = Field(min_length=1, max_length=1000)
+    changes: list[FixFileChange] = Field(min_length=1, max_length=1)
+
+    @field_validator("source_branch", "target_branch")
+    @classmethod
+    def validate_branch(cls, value: str) -> str:
+        """Keep branch names bounded and non-option-like for executor calls."""
+        normalized = value.strip()
+        if (
+            not normalized
+            or normalized.startswith("-")
+            or "://" in normalized
+            or normalized.endswith("/")
+        ):
+            raise ValueError("branch name is not safe")
+        return normalized
 
 
 class PipelineJobSummary(AppModel):

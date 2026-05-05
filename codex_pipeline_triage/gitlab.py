@@ -24,6 +24,7 @@ class GlabApiRequest:
     endpoint: str
     method: HttpMethod = "GET"
     fields: Mapping[str, str] | None = None
+    json_body: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,7 @@ class GlabExecutor:
         """Execute a GitLab API request and parse the JSON response."""
         args = self._build_args(request, output="json")
         env = self._build_env(token=token)
+        stdin = self._build_stdin(request)
 
         try:
             result = subprocess.run(
@@ -46,6 +48,7 @@ class GlabExecutor:
                 capture_output=True,
                 check=False,
                 env=env,
+                input=stdin,
                 text=True,
                 timeout=self.timeout_seconds,
             )
@@ -70,6 +73,7 @@ class GlabExecutor:
         """Execute a GitLab API request that returns raw text."""
         args = self._build_args(request, output="text")
         env = self._build_env(token=token)
+        stdin = self._build_stdin(request)
 
         try:
             result = subprocess.run(
@@ -77,6 +81,7 @@ class GlabExecutor:
                 capture_output=True,
                 check=False,
                 env=env,
+                input=stdin,
                 text=True,
                 timeout=self.timeout_seconds,
             )
@@ -92,6 +97,8 @@ class GlabExecutor:
         endpoint = request.endpoint.strip()
         if not endpoint or endpoint.startswith("-") or "://" in endpoint:
             raise ValueError("endpoint must be a GitLab API path")
+        if request.fields is not None and request.json_body is not None:
+            raise ValueError("fields and json_body cannot be combined")
 
         args = [
             self.glab_bin,
@@ -104,11 +111,25 @@ class GlabExecutor:
         ]
         if output == "json":
             args.extend(["--output", "json"])
+        if request.json_body is not None:
+            args.extend(
+                [
+                    "--header",
+                    "Content-Type: application/json",
+                    "--input",
+                    "-",
+                ]
+            )
 
         for key, value in (request.fields or {}).items():
             args.extend(["--field", f"{key}={value}"])
 
         return args
+
+    def _build_stdin(self, request: GlabApiRequest) -> str | None:
+        if request.json_body is None:
+            return None
+        return json.dumps(request.json_body, separators=(",", ":"), sort_keys=True)
 
     def _build_env(self, *, token: str | None) -> dict[str, str]:
         env = {

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from codex_pipeline_triage.app import create_app
 from codex_pipeline_triage.auth import InMemorySessionStore
+from codex_pipeline_triage.codex_adapter import CodexTriageOutcome
 from codex_pipeline_triage.context import (
     ContextBuildError,
     GitLabContextJob,
@@ -23,12 +24,15 @@ from codex_pipeline_triage.models import (
     IssueTarget,
     MergeRequestTarget,
     PipelineContext,
+    PipelineMonitor,
+    ProjectActionPolicy,
+    TriageRun,
 )
 from codex_pipeline_triage.persistence import SqliteStore
 from codex_pipeline_triage.projects import (
     ProjectConnector,
 )
-from codex_pipeline_triage.reporting import MockMrReporter
+from codex_pipeline_triage.reporting import PIPELINE_TRIAGE_MODE_CODEX, MockMrReporter
 from tests.codex_pipeline_triage.helpers import make_auth_settings
 from tests.codex_pipeline_triage.test_context import (
     FakeGitLabContextClient,
@@ -40,8 +44,11 @@ from tests.codex_pipeline_triage.test_projects import (
     RecordingProjectTokenStore,
 )
 from tests.codex_pipeline_triage.test_reporting import (
+    RecordingCodexAdapter,
     RecordingIssueClient,
     RecordingMrNoteClient,
+    RecordingRetryClient,
+    retry_triage_result,
 )
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -394,6 +401,188 @@ def test_existing_context_mr_run_without_note_is_reported_on_replay(
     assert len(store.list_action_logs_for_run(runs[0].id)) == 1
 
 
+def test_later_pass_pipeline_event_closes_waiting_monitor(tmp_path: Path) -> None:
+    client, store, project = make_webhook_client(tmp_path)
+    run, monitor = create_waiting_monitor(store, project)
+    payload = monitor_pipeline_payload(
+        project=project,
+        monitor=monitor,
+        pipeline_id=run.pipeline_id + 100,
+        status="success",
+    )
+
+    response = client.post(
+        f"/webhooks/gitlab/{project.id}",
+        json=payload,
+        headers=webhook_headers(),
+    )
+    duplicate_response = client.post(
+        f"/webhooks/gitlab/{project.id}",
+        json=payload,
+        headers=webhook_headers(),
+    )
+
+    assert response.status_code == 202
+    assert duplicate_response.status_code == 204
+    runs = store.list_triage_runs_for_project(project.id)
+    assert len(runs) == 1
+    assert runs[0].status == "completed"
+    updated_monitor = store.get_pipeline_monitor(monitor.id)
+    assert updated_monitor is not None
+    assert updated_monitor.status == "passed"
+    assert updated_monitor.expected_pipeline_id == run.pipeline_id + 100
+    action_logs = store.list_action_logs_for_run(run.id)
+    assert len(action_logs) == 1
+    assert action_logs[0].action == "post_mr_note"
+    assert action_logs[0].status == "completed"
+
+
+def test_later_fail_pipeline_event_reports_monitor_failure(tmp_path: Path) -> None:
+    client, store, project = make_webhook_client(tmp_path)
+    run, monitor = create_waiting_monitor(store, project)
+    payload = monitor_pipeline_payload(
+        project=project,
+        monitor=monitor,
+        pipeline_id=run.pipeline_id + 101,
+        status="failed",
+    )
+
+    response = client.post(
+        f"/webhooks/gitlab/{project.id}",
+        json=payload,
+        headers=webhook_headers(),
+    )
+    duplicate_response = client.post(
+        f"/webhooks/gitlab/{project.id}",
+        json=payload,
+        headers=webhook_headers(),
+    )
+
+    assert response.status_code == 202
+    assert duplicate_response.status_code == 204
+    runs = store.list_triage_runs_for_project(project.id)
+    assert len(runs) == 1
+    assert runs[0].status == "failed"
+    assert runs[0].fallback_reason == "Follow-up pipeline failed."
+    updated_monitor = store.get_pipeline_monitor(monitor.id)
+    assert updated_monitor is not None
+    assert updated_monitor.status == "failed"
+    assert updated_monitor.expected_pipeline_id == run.pipeline_id + 101
+    action_logs = store.list_action_logs_for_run(run.id)
+    assert len(action_logs) == 1
+    assert action_logs[0].action == "post_mr_note"
+    assert action_logs[0].status == "completed"
+
+
+# pylint: disable-next=too-many-locals
+def test_retry_gate_duplicate_and_job_hook_stay_idempotent(
+    tmp_path: Path,
+) -> None:
+    settings = make_auth_settings()
+    store = SqliteStore(tmp_path / "triage.sqlite")
+    connected_project = make_connected_project().model_copy(
+        update={
+            "webhook_secret_hash": webhook_secret_hash("webhook-secret"),
+            "action_policy": ProjectActionPolicy(auto_retry=True),
+        }
+    )
+    store.create_connected_project(connected_project)
+    token_store = RecordingProjectTokenStore()
+    token_store.tokens["secret-ref:1"] = "project-token"
+    note_client = RecordingMrNoteClient(note_ids=[9001, 9002])
+    retry_client = RecordingRetryClient(job_result_id=5001)
+    project_connector = ProjectConnector(
+        settings=settings,
+        gitlab_project_client=FakeGitLabProjectClient(),
+        token_store=token_store,
+        persistence_store=store,
+    )
+    context_builder = PipelineContextBuilder(
+        gitlab_context_client=FakeGitLabContextClient(),
+        token_store=token_store,
+        persistence_store=store,
+    )
+    mock_mr_reporter = MockMrReporter(
+        mr_note_client=note_client,
+        issue_client=RecordingIssueClient(),
+        retry_client=retry_client,
+        token_store=token_store,
+        persistence_store=store,
+        triage_mode=PIPELINE_TRIAGE_MODE_CODEX,
+        codex_adapter=RecordingCodexAdapter(
+            outcome=CodexTriageOutcome(
+                adapter_mode="mock",
+                fallback_reason="Spike 7.1 deterministic manual retry gate.",
+                triage_result=retry_triage_result(
+                    recommended_action="retry_job",
+                    retry_safe=True,
+                ),
+            )
+        ),
+    )
+    client = TestClient(
+        create_app(
+            auth_settings=settings,
+            session_store=InMemorySessionStore(),
+            project_connector=project_connector,
+            context_builder=context_builder,
+            mock_mr_reporter=mock_mr_reporter,
+        ),
+        base_url="https://testserver",
+    )
+    raw_body = fixture_body("pipeline_failed_mr.json")
+
+    first_response = client.post(
+        f"/webhooks/gitlab/{connected_project.id}",
+        content=raw_body,
+        headers=webhook_headers(),
+    )
+    second_response = client.post(
+        f"/webhooks/gitlab/{connected_project.id}",
+        content=raw_body,
+        headers=webhook_headers(),
+    )
+    job_response = client.post(
+        f"/webhooks/gitlab/{connected_project.id}",
+        json={
+            "object_kind": "build",
+            "build_id": 4101,
+            "build_status": "failed",
+            "project_id": connected_project.gitlab_project_id,
+        },
+        headers=webhook_headers(event="Job Hook"),
+    )
+
+    assert first_response.status_code == 202
+    assert second_response.status_code == 204
+    assert job_response.status_code == 204
+    runs = store.list_triage_runs_for_project(connected_project.id)
+    assert len(runs) == 1
+    assert runs[0].status == "actioned"
+    assert runs[0].action_plan is not None
+    assert runs[0].action_plan.action == "retry_job"
+    assert runs[0].gitlab_note_ids == [9001, 9002]
+    assert retry_client.job_calls == [
+        {
+            "project_id": connected_project.gitlab_project_id,
+            "job_id": 4101,
+            "project_token": "project-token",
+        }
+    ]
+    action_logs = store.list_action_logs_for_run(runs[0].id)
+    retry_logs = [
+        action_log for action_log in action_logs if action_log.action == "retry_job"
+    ]
+    post_note_logs = [
+        action_log for action_log in action_logs if action_log.action == "post_mr_note"
+    ]
+    assert len(retry_logs) == 1
+    assert retry_logs[0].status == "completed"
+    assert retry_logs[0].external_id == "5001"
+    assert len(post_note_logs) == 2
+    assert len(note_client.calls) == 2
+
+
 def test_failed_pipeline_marks_run_failed_when_context_build_fails(
     tmp_path: Path,
 ) -> None:
@@ -504,6 +693,69 @@ def make_webhook_client(
         base_url="https://testserver",
     )
     return client, store, connected_project
+
+
+def create_waiting_monitor(
+    store: SqliteStore,
+    project: ConnectedProject,
+) -> tuple[TriageRun, PipelineMonitor]:
+    """Persist one existing run with a waiting fix-branch monitor."""
+    report_target = MergeRequestTarget(
+        project_id=project.gitlab_project_id,
+        merge_request_iid=17,
+    )
+    run = make_triage_run(
+        project,
+        pipeline_kind="merge_request",
+        report_target=report_target,
+    ).model_copy(
+        update={
+            "id": "monitor-run",
+            "pipeline_id": 9101,
+            "ref": "feature/checkout-tax",
+            "sha": "mrabc123",
+            "status": "monitoring",
+            "gitlab_note_ids": [9001, 9002],
+        }
+    )
+    monitor = PipelineMonitor(
+        id="monitor-1",
+        triage_run_id=run.id,
+        gitlab_project_id=project.gitlab_project_id,
+        expected_ref="codex-fix/pipeline-9101-mrabc123",
+        expected_sha="fixsha123",
+        expected_pipeline_id=None,
+        report_target=report_target,
+        status="waiting",
+        created_at=TEST_TIME,
+        updated_at=TEST_TIME,
+    )
+    store.create_triage_run(run)
+    store.create_pipeline_monitor(monitor)
+    return run, monitor
+
+
+def monitor_pipeline_payload(
+    *,
+    project: ConnectedProject,
+    monitor: PipelineMonitor,
+    pipeline_id: int,
+    status: str,
+) -> dict[str, object]:
+    """Build a minimal later Pipeline Hook payload for a waiting monitor."""
+    return {
+        "object_kind": "pipeline",
+        "object_attributes": {
+            "id": pipeline_id,
+            "status": status,
+            "ref": monitor.expected_ref,
+            "sha": monitor.expected_sha,
+            "source": "push",
+            "tag": False,
+        },
+        "project": {"id": project.gitlab_project_id},
+        "builds": [],
+    }
 
 
 TEST_TIME = datetime(2026, 5, 4, 12, 0, tzinfo=timezone.utc)

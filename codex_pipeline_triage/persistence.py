@@ -30,7 +30,7 @@ class RecordNotFoundError(StoreError):
     """Raised when an update targets a missing record."""
 
 
-class PersistenceStore(Protocol):
+class PersistenceStore(Protocol):  # pylint: disable=too-many-public-methods
     """Typed persistence operations needed by the app workflow."""
 
     def create_user(self, user: AppUser) -> AppUser: ...
@@ -85,9 +85,13 @@ class PersistenceStore(Protocol):
         self, triage_run_id: str
     ) -> list[PipelineMonitor]: ...
 
+    def list_pipeline_monitors_for_project(
+        self, gitlab_project_id: int
+    ) -> list[PipelineMonitor]: ...
+
 
 @dataclass(frozen=True)
-class SqliteStore:
+class SqliteStore:  # pylint: disable=too-many-public-methods
     """Small SQLite store with one JSON payload table per record type."""
 
     db_path: Path
@@ -289,6 +293,18 @@ class SqliteStore:
             PipelineMonitor,
         )
 
+    def list_pipeline_monitors_for_project(
+        self, gitlab_project_id: int
+    ) -> list[PipelineMonitor]:
+        return [
+            monitor
+            for monitor in self._list_all_records(
+                "pipeline_monitors",
+                PipelineMonitor,
+            )
+            if monitor.gitlab_project_id == gitlab_project_id
+        ]
+
     def _ensure_schema(self) -> None:
         schema = (
             """
@@ -419,5 +435,19 @@ class SqliteStore:
                 """,
                 (filter_value,),
             ).fetchall()
+
+        return [model_type.model_validate_json(row["payload"]) for row in rows]
+
+    def _list_all_records(
+        self,
+        table: str,
+        model_type: type[ModelT],
+    ) -> list[ModelT]:
+        with closing(self._connect()) as connection:
+            rows = connection.execute(f"""
+                SELECT payload
+                FROM {table}
+                ORDER BY id
+                """).fetchall()
 
         return [model_type.model_validate_json(row["payload"]) for row in rows]

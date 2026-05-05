@@ -1,9 +1,12 @@
 """Tests for Spike 3.1 project connection."""
 
+# pylint: disable=duplicate-code
+
 from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 from unittest.mock import Mock
@@ -14,7 +17,16 @@ from fastapi.testclient import TestClient
 from codex_pipeline_triage.app import create_app
 from codex_pipeline_triage.auth import GitLabIdentity, InMemorySessionStore
 from codex_pipeline_triage.gitlab import GlabExecutor, GlabExecutorError
-from codex_pipeline_triage.models import ConnectedProject
+from codex_pipeline_triage.models import (
+    ActionPlan,
+    ConnectedProject,
+    EvidenceItem,
+    GitLabActionLog,
+    MergeRequestTarget,
+    PipelineMonitor,
+    TriageResult,
+    TriageRun,
+)
 from codex_pipeline_triage.persistence import SqliteStore
 from codex_pipeline_triage.projects import (
     GitLabProjectMetadata,
@@ -336,6 +348,73 @@ def test_webhook_setup_page_shows_instructions_without_raw_secret_after_generati
     assert raw_webhook_secret not in response.text
 
 
+def test_project_pages_show_run_history_and_detail_without_tokens(
+    tmp_path: Path,
+) -> None:
+    raw_project_token = "token-that-must-not-render"
+    client, persistence_store, token_store = make_authenticated_client(
+        tmp_path,
+        FakeGitLabProjectClient(),
+    )
+    connected_project = _connect_project_for_test(
+        client,
+        persistence_store,
+        project_token=raw_project_token,
+    )
+    token_store.tokens["secret-ref:1"] = raw_project_token
+    triage_run = _create_run_detail_records(persistence_store, connected_project)
+
+    projects_response = client.get("/projects")
+    history_response = client.get(f"/projects/{connected_project.id}/runs")
+    detail_response = client.get(
+        f"/projects/{connected_project.id}/runs/{triage_run.id}"
+    )
+
+    assert projects_response.status_code == 200
+    assert "Run history" in projects_response.text
+    assert history_response.status_code == 200
+    assert "Pipeline 9001" in history_response.text
+    assert "status=monitoring" in history_response.text
+    assert detail_response.status_code == 200
+    assert "Run Detail" in detail_response.text
+    assert "create_merge_request" in detail_response.text
+    assert "Follow-up Monitors" in detail_response.text
+    assert "codex-fix/pipeline-9001-abc123" in detail_response.text
+    assert "x" * 260 not in detail_response.text
+    assert "raw-project-token" not in detail_response.text
+    assert raw_project_token not in projects_response.text
+    assert raw_project_token not in history_response.text
+
+
+def test_run_detail_rejects_run_outside_connected_project(tmp_path: Path) -> None:
+    client, persistence_store, _ = make_authenticated_client(
+        tmp_path,
+        FakeGitLabProjectClient(),
+    )
+    connected_project = _connect_project_for_test(client, persistence_store)
+    other_project = connected_project.model_copy(
+        update={
+            "id": "connected-project-other",
+            "gitlab_project_id": 3003,
+            "gitlab_project_path": "universalamateur1/other",
+        }
+    )
+    persistence_store.create_connected_project(other_project)
+    report_target = MergeRequestTarget(
+        project_id=other_project.gitlab_project_id,
+        merge_request_iid=1,
+    )
+    triage_run = _make_triage_run(
+        other_project,
+        report_target=report_target,
+    )
+    persistence_store.create_triage_run(triage_run)
+
+    response = client.get(f"/projects/{connected_project.id}/runs/{triage_run.id}")
+
+    assert response.status_code == 404
+
+
 def test_webhook_secret_generation_rejects_invalid_csrf(
     tmp_path: Path,
 ) -> None:
@@ -370,13 +449,15 @@ def _csrf_token_from_cookie_session(client: TestClient) -> str:
 def _connect_project_for_test(
     client: TestClient,
     persistence_store: SqliteStore,
+    *,
+    project_token: str = "raw-project-token",
 ) -> ConnectedProject:
     response = client.post(
         "/projects/connect",
         data={
             "csrf_token": _csrf_token_from_cookie_session(client),
             "project_reference": "universalamateur1/checkout-service",
-            "project_token": "raw-project-token",
+            "project_token": project_token,
         },
         follow_redirects=False,
     )
@@ -386,6 +467,109 @@ def _connect_project_for_test(
     return connected_projects[0]
 
 
+def _create_run_detail_records(
+    persistence_store: SqliteStore,
+    connected_project: ConnectedProject,
+) -> TriageRun:
+    report_target = MergeRequestTarget(
+        project_id=connected_project.gitlab_project_id,
+        merge_request_iid=17,
+    )
+    triage_result = TriageResult(
+        root_cause_hypothesis="Checkout rounding failed.",
+        category="code-bug",
+        confidence=0.84,
+        evidence=[
+            EvidenceItem(
+                source="mr_diff",
+                file="checkout/tax.py",
+                snippet="Discounts were rounded before tax.",
+            )
+        ],
+        retry_safe=False,
+        recommended_action="create_fix_mr",
+        suggested_fix="Restore discount-before-rounding behavior.",
+        needs_human_review=False,
+    )
+    triage_run = _make_triage_run(
+        connected_project,
+        report_target=report_target,
+    ).model_copy(
+        update={
+            "status": "monitoring",
+            "ref": "feature/" + ("x" * 400),
+            "fallback_reason": None,
+            "context_digest": "sha256:context",
+            "triage_json": triage_result,
+            "action_plan": ActionPlan(
+                action="create_fix_mr",
+                reason="Fix MR allowed by project policy.",
+                requires_fixer_agent=True,
+            ),
+            "gitlab_note_ids": [331, 332],
+            "fix_merge_request_iid": 2,
+        }
+    )
+    persistence_store.create_triage_run(triage_run)
+    persistence_store.create_action_log(
+        GitLabActionLog(
+            id="action-1",
+            triage_run_id=triage_run.id,
+            idempotency_key="create-fix-mr:2002:9001",
+            action="create_merge_request",
+            report_target=report_target,
+            policy_decision="allowed",
+            request_digest="sha256:request",
+            external_id="2",
+            status="completed",
+            created_at=TEST_TIME,
+            updated_at=TEST_TIME,
+        )
+    )
+    persistence_store.create_pipeline_monitor(
+        PipelineMonitor(
+            id="monitor-1",
+            triage_run_id=triage_run.id,
+            gitlab_project_id=connected_project.gitlab_project_id,
+            expected_ref="codex-fix/pipeline-9001-abc123",
+            expected_sha="fixsha123",
+            expected_pipeline_id=None,
+            report_target=report_target,
+            status="waiting",
+            created_at=TEST_TIME,
+            updated_at=TEST_TIME,
+        )
+    )
+    return triage_run
+
+
+def _make_triage_run(
+    connected_project: ConnectedProject,
+    *,
+    report_target: MergeRequestTarget,
+) -> TriageRun:
+    return TriageRun(
+        id="run-1",
+        connected_project_id=connected_project.id,
+        gitlab_project_id=connected_project.gitlab_project_id,
+        pipeline_id=9001,
+        job_ids=[4001],
+        ref="feature/checkout-tax",
+        sha="abc123",
+        pipeline_kind="merge_request",
+        report_target=report_target,
+        status="ignored",
+        adapter_mode="mock",
+        fallback_reason="Spike 5.1 context only; triage not started.",
+        input_digest="sha256:webhook",
+        created_at=TEST_TIME,
+        updated_at=TEST_TIME,
+    )
+
+
 def _expected_secret_hash(raw_secret: str) -> str:
     digest = hashlib.sha256(raw_secret.encode("utf-8")).hexdigest()
     return f"sha256:{digest}"
+
+
+TEST_TIME = datetime(2026, 5, 4, 12, 0, tzinfo=timezone.utc)

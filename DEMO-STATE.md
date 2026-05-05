@@ -1,31 +1,31 @@
 # Demo State
 
-> Last updated: 2026-05-02
+> Last updated: 2026-05-05
 
 ## Current Repo State
 
-The repo is in planning/spec stage.
+The repo is in Spike 8.2 demo-hardening stage.
 
 Implemented:
 
-- Project README.
-- Application spec.
-- Runtime stack ADR.
-- Demo state document.
-- Agent/developer instructions.
-- Iterative spike plan.
-- Start prompts for dev and reviewer teams.
-- Git ignore rules for local context and secrets.
-- Local-only handoff folder under `.local/`.
+- FastAPI app with health endpoint, GitLab OAuth login/logout, and GitLab group gate.
+- Connected-project setup with project-token validation and GitLab group boundary.
+- Webhook setup with generated per-project secret hash.
+- GitLab Pipeline Hook intake, classification, duplicate handling, and Job Hook ignore behavior.
+- Bounded/redacted context builder for jobs, traces, and diffs.
+- Server-side Codex Python SDK adapter with timeout, read-only controls, Pydantic validation, and visible fallback.
+- MR note reporting, branch issue reporting, retry action, fix MR creation, and follow-up monitor result notes through deterministic GitLab executor/client code.
+- SQLite persistence for projects, runs, action logs, and monitor records.
+- Run history and run detail pages for demo inspection.
+- Focused and full automated test coverage through Spike 8.2.
 
-Not implemented yet:
+Out of scope for this demo cut:
 
-- Runtime app.
-- GitLab OAuth.
-- Webhook receiver.
-- Codex SDK adapter.
-- Persistence.
-- Tests.
+- Auto-merge.
+- Unbounded autonomous loops.
+- Customer or private production repositories.
+- Browser-side Codex SDK usage.
+- Background polling worker beyond the deterministic timeout path.
 
 ## Demo Goal
 
@@ -62,7 +62,7 @@ Intentional failure:
 
 ## Demo Flow V1
 
-V1 should prove the reporting loop before automated fixes. V1 is report-only.
+V1 proves the reporting loop before controlled actions.
 
 ```text
 1. User logs into app with GitLab.
@@ -78,6 +78,7 @@ V1 should prove the reporting loop before automated fixes. V1 is report-only.
 11. App validates output.
 12. App posts MR note.
 13. App persists triage run.
+14. App run detail shows status, adapter mode, action logs, and monitor state.
 ```
 
 Success screenshot:
@@ -128,7 +129,9 @@ V3 adds controlled opt-in actions:
 - Monitor follow-up pipeline.
 - Report final pass/fail status.
 
-Do not start with V3. The OpenAI demo is stronger if V1 is reliable and easy to explain.
+Use V3 only after the real Codex MR-note path is shown. Keep the story clear:
+Codex recommends, project policy gates, deterministic executor mutates GitLab,
+and monitors report the follow-up result. Never imply auto-merge.
 
 ## Five-Minute Loom Shape
 
@@ -139,24 +142,26 @@ Do not start with V3. The OpenAI demo is stronger if V1 is reliable and easy to 
 | 1:05-1:55 | Intake | App run detail: pipeline classified as MR pipeline, failed job fetched. |
 | 1:55-2:45 | Codex | Server-side Codex SDK call, structured output validation, timeout/fallback. |
 | 2:45-3:35 | Result | MR note appears with diagnosis and suggested fix. |
-| 3:35-4:20 | Safety | GitLab group authorization, project token boundary, schema validation, no direct Codex mutations. |
-| 4:20-5:00 | Tests | Show focused tests and close with next actions. |
+| 3:35-4:20 | Controlled action | Optional fix MR and follow-up monitor result, clearly policy-gated. |
+| 4:20-4:45 | Safety | Group gate, token boundary, schema validation, no direct Codex mutations, no auto-merge. |
+| 4:45-5:00 | Tests | Show focused tests and close with final readiness. |
 
 ## Acceptance Criteria For Demo Readiness
 
-- [ ] Login works with GitLab OAuth/OIDC.
-- [ ] User outside the configured GitLab group is denied.
-- [ ] Connected project outside the configured GitLab group is rejected.
-- [ ] Project connection can store token and webhook secret server-side.
-- [ ] Failed MR Pipeline event triggers a triage run.
-- [ ] Non-failed Pipeline events are ignored.
-- [ ] Codex SDK path runs in real mode at least once before recording.
-- [ ] Mock mode remains deterministic for tests.
-- [ ] MR receives exactly one readable report for the demo failure.
-- [ ] V1 does not retry jobs, create commits, or open fix MRs.
-- [ ] App run history persists after restart.
-- [ ] Tests pass.
-- [ ] Loom dry run fits under five minutes.
+- [x] Login works with GitLab OAuth/OIDC.
+- [x] User outside the configured GitLab group is denied.
+- [x] Connected project outside the configured GitLab group is rejected.
+- [x] Project connection can store token and webhook secret server-side.
+- [x] Failed MR Pipeline event triggers a triage run.
+- [x] Non-failed Pipeline events are ignored.
+- [x] Codex SDK path runs in real mode at least once before recording.
+- [x] Mock mode remains deterministic for tests.
+- [x] MR receives exactly one readable report for the initial demo failure.
+- [x] Controlled retry/fix MR actions are policy-gated and disabled unless explicitly enabled.
+- [x] Follow-up monitor failure path has passed manual gate.
+- [x] App run history persists after restart.
+- [x] Tests pass.
+- [ ] Final Loom dry run fits under five minutes.
 
 ## Iterative Delivery State
 
@@ -169,16 +174,17 @@ dev spike -> reviewer handoff -> Falko manual test -> fix/accept -> next spike
 Current stage:
 
 ```text
-Stage 0 - Planning And Repo Readiness
+Stage 8 - Monitoring And Demo Polish
 ```
 
 Next spike:
 
 ```text
-Spike 1.1 - Framework Decision And Skeleton
+Spike 8.2 - Demo Hardening
 ```
 
-Use [SPIKES.md](SPIKES.md) for the full plan and [START-PROMPTS.md](START-PROMPTS.md) to start the dev and pair code reviewer teams.
+Use [DEMO-SCRIPT.md](DEMO-SCRIPT.md) for the five-minute recording path and
+keep manual-test evidence in `.local/`.
 
 ## Demo Talking Points
 
