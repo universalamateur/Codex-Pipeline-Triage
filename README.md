@@ -29,6 +29,25 @@ Implemented:
 
 ## Product Shape
 
+### Executive View
+
+```mermaid
+flowchart LR
+    A[GitLab pipeline fails] --> B[App verifies Pipeline Hook]
+    B --> C[Codex analyzes safe context]
+    C --> D[App posts explanation in GitLab]
+    D --> E{Create fix MR?}
+    E -->|No| F[Report only]
+    E -->|Human clicks button| G[Bot branch and fix MR]
+    G --> H[Follow-up pipeline is monitored]
+```
+
+The short version: a failed pipeline becomes a clear GitLab note, and an
+optional human-approved button can create a bot fix MR. The app does not commit
+to the user's branch and does not auto-merge.
+
+### Engineering Safety View
+
 ```mermaid
 flowchart LR
     GL[GitLab MR pipeline fails] -->|Pipeline Hook only| WR[Webhook receiver]
