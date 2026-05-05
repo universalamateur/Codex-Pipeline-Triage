@@ -80,6 +80,21 @@ This is intended to satisfy the OpenAI Codex demo-app requirement:
 
 Local-only context lives in `.local/`. It is intentionally ignored by Git and can contain absolute workstation paths and zettelkasten cross-links.
 
+## Post-MVC Documentation TODO
+
+After the MVC/demo path is complete, rebuild the public development artifacts as
+a coherent tracked set:
+
+- `AGENTS.md`
+- public `ROADMAP.md`
+- `SPEC.md`
+- `SPIKES.md`
+- `README.md`
+- public ADRs and demo-development notes
+
+Keep private prompts, reviewer handoffs, local manual-test evidence, workstation
+paths, and sensitive/demo-only coordination notes in `.local/`.
+
 ## Planned Stack
 
 - Python 3.10+
