@@ -1,5 +1,9 @@
 # Codex Pipeline Triage
 
+![Project logo](./logo.png)
+
+[Lead repository on GitLab](https://gitlab.com/universalamateur1/codex-pipeline-triage)
+
 Codex Pipeline Triage is a GitLab-connected demo app for failed CI/CD pipelines. A failed GitLab pipeline event triggers the app, the app builds bounded context from GitLab, Codex analyzes the failure through the Codex SDK, and the app reports findings back into GitLab.
 
 This repository is the implementation home for Codex Pipeline Triage. "Pipeline Fixxer" is retained only as historical planning context.
