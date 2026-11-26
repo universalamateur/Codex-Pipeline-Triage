@@ -9,9 +9,8 @@ Read these before implementing:
 1. [SPEC.md](SPEC.md)
 2. [SPIKES.md](SPIKES.md)
 3. [DEMO-STATE.md](DEMO-STATE.md)
-4. [START-PROMPTS.md](START-PROMPTS.md)
 5. [ADR-0001-runtime-stack.md](ADR-0001-runtime-stack.md)
-6. [README.md](README.md)
+5. [README.md](README.md)
 7. Local-only `.local/HANDOFF.md` if present on Falko's workstation.
 
 The planning dossier in the personal zettelkasten is upstream context, not runtime source. In this repo, `SPEC.md` is the implementation contract.
@@ -80,7 +79,6 @@ Before claiming a step is done:
 
 ## Team Prompts
 
-Use [START-PROMPTS.md](START-PROMPTS.md) when launching:
 
 - the dev team for one spike.
 - the pair code reviewer team for one completed spike.
